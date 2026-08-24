@@ -16,11 +16,20 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
+
+	"global-build/internal/gitx"
 )
+
+// EnvConfigContent is OpenCode's runtime inline configuration mechanism: when
+// set in the environment of a spawned OpenCode process, its JSON value is merged
+// over the on-disk configuration for that invocation only. It is NOT written to
+// disk and does NOT alter the global agent definition.
+const EnvConfigContent = "OPENCODE_CONFIG_CONTENT"
 
 // AgentName is the dedicated global agent id used for every BUILD attempt.
 const AgentName = "global-build-worker"
@@ -224,6 +233,113 @@ type Attempt struct {
 	Cancelled     bool  // context cancelled while running (timeout/interrupt)
 }
 
+// BuildInlineConfig returns the merged OPENCODE_CONFIG_CONTENT JSON string for
+// a single run. It grants agent global-build-worker external_directory access
+// ONLY to the exact canonical worktree, while denying everything else, WITHOUT
+// granting global external_directory: allow and WITHOUT weakening unrelated
+// rules.
+//
+// The injected override is:
+//
+//	agent.global-build-worker.permission.external_directory = {
+//	  "*":                     "deny",
+//	  "<canonicalWorktree>/**": "allow",
+//	}
+//
+// existingContent is the parent process's current OPENCODE_CONFIG_CONTENT (it
+// may be empty). It is parsed as JSON; any malformed value fails closed so a
+// broken user config is never silently discarded or replaced. All unrelated
+// configuration (other agents, other permission keys, top-level fields) is
+// preserved exactly. The canonical worktree identity is the same one the runner
+// uses (gitx.CanonicalPath), so the allow rule matches exactly what the worker
+// will observe.
+func BuildInlineConfig(existingContent, worktreeDir string) (string, error) {
+	wt := gitx.CanonicalPath(worktreeDir)
+
+	root := map[string]json.RawMessage{}
+	if s := strings.TrimSpace(existingContent); s != "" {
+		if err := json.Unmarshal([]byte(s), &root); err != nil {
+			return "", fmt.Errorf("existing OPENCODE_CONFIG_CONTENT is not valid JSON: %w", err)
+		}
+	}
+
+	agents := map[string]json.RawMessage{}
+	if raw, ok := root["agent"]; ok {
+		if err := json.Unmarshal(raw, &agents); err != nil {
+			return "", fmt.Errorf("existing agent block is not a valid object: %w", err)
+		}
+	}
+
+	worker := map[string]json.RawMessage{}
+	if raw, ok := agents[AgentName]; ok {
+		if err := json.Unmarshal(raw, &worker); err != nil {
+			return "", fmt.Errorf("existing %s agent block is not a valid object: %w", AgentName, err)
+		}
+	}
+
+	perm := map[string]json.RawMessage{}
+	if raw, ok := worker["permission"]; ok {
+		if err := json.Unmarshal(raw, &perm); err != nil {
+			return "", fmt.Errorf("existing %s permission block is not a valid object: %w", AgentName, err)
+		}
+	}
+
+	// Broad deny first, exact canonical-worktree allow last.
+	extDir := map[string]string{
+		"*":        "deny",
+		path.Join(wt, "**"): "allow",
+	}
+	extDirRaw, err := json.Marshal(extDir)
+	if err != nil {
+		return "", fmt.Errorf("cannot encode external_directory override: %w", err)
+	}
+	perm["external_directory"] = extDirRaw
+
+	permRaw, err := json.Marshal(perm)
+	if err != nil {
+		return "", fmt.Errorf("cannot encode permission override: %w", err)
+	}
+	worker["permission"] = permRaw
+
+	workerRaw, err := json.Marshal(worker)
+	if err != nil {
+		return "", fmt.Errorf("cannot encode %s override: %w", AgentName, err)
+	}
+	agents[AgentName] = workerRaw
+
+	agentsRaw, err := json.Marshal(agents)
+	if err != nil {
+		return "", fmt.Errorf("cannot encode agent override: %w", err)
+	}
+	root["agent"] = agentsRaw
+
+	out, err := json.MarshalIndent(root, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("cannot encode merged config: %w", err)
+	}
+	return string(out), nil
+}
+
+// buildChildEnv returns the full environment for the child OpenCode process:
+// the inherited parent environment with OPENCODE_CONFIG_CONTENT replaced by the
+// run-specific merged config. The inheritance guarantees unrelated variables
+// (PATH, GLOBAL_BUILD_OPENCODE_BIN, etc.) are carried through untouched.
+func buildChildEnv(worktreeDir string) ([]string, error) {
+	merged, err := BuildInlineConfig(os.Getenv(EnvConfigContent), worktreeDir)
+	if err != nil {
+		return nil, err
+	}
+	childEnv := make([]string, 0, len(os.Environ())+1)
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, EnvConfigContent+"=") {
+			continue // drop any pre-existing value; we re-add the merged one
+		}
+		childEnv = append(childEnv, kv)
+	}
+	childEnv = append(childEnv, EnvConfigContent+"="+merged)
+	return childEnv, nil
+}
+
 // Executable resolves the OpenCode CLI binary path: explicit env override
 // first (absolute path or name looked up in PATH), then plain PATH lookup.
 func Executable(envVar string) (string, error) {
@@ -256,12 +372,23 @@ const (
 // with taskBody passed through child stdin. Stdout is consumed as NDJSON;
 // child stderr is forwarded to stderrOut for operational diagnostics.
 func Invoke(ctx context.Context, bin, worktreeDir, taskBody string, stderrOut io.Writer) (*Attempt, error) {
+	// Each BUILD invocation must grant the worker external_directory access to
+	// ONLY its exact current disposable worktree. We inject that as a run-specific
+	// runtime inline config (OPENCODE_CONFIG_CONTENT), merging over any config
+	// already present in the parent environment. Malformed pre-existing config
+	// fails closed: we never silently replace or discard it.
+	childEnv, err := buildChildEnv(worktreeDir)
+	if err != nil {
+		return nil, fmt.Errorf("cannot build opencode child environment: %w", err)
+	}
+
 	cmd := exec.CommandContext(ctx, bin,
 		"run",
 		"--format", "json",
 		"--agent", AgentName,
 		"--dir", worktreeDir,
 	)
+	cmd.Env = childEnv
 	cmd.Stdin = strings.NewReader(taskBody)
 	cmd.WaitDelay = 3 * time.Second // ensure pipes close after forced kill
 
