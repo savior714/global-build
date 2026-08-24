@@ -1,0 +1,6 @@
+# OpenCode goal-plugin runtime state (unrelated to the runner source)
+.opencode/
+
+# Compiled binary
+/global-build
+/dist/
