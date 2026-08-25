@@ -18,11 +18,12 @@ import (
 // WorktreeEntry is one record of `git worktree list --porcelain -z`
 // (NUL-safe form).
 type WorktreeEntry struct {
-	Path     string // absolute, symlink-resolved by Git
-	Head     string // oid or empty when unborn
-	Detached bool
-	Bare     bool
-	Locked   bool
+	Path      string // absolute, symlink-resolved by Git
+	Head      string // oid or empty when unborn
+	Detached  bool
+	Bare      bool
+	Locked    bool
+	LockReason string // reason text when locked with --reason, else empty
 }
 
 // Run executes git in dir and returns stdout. Non-zero exit becomes an error
@@ -167,6 +168,9 @@ func WorktreeListPorcelainZ(ctx context.Context, dir string) ([]WorktreeEntry, e
 			cur.Detached = true
 		case tok == "bare":
 			cur.Bare = true
+		case strings.HasPrefix(tok, "locked "):
+			cur.Locked = true
+			cur.LockReason = strings.TrimPrefix(tok, "locked ")
 		case tok == "locked":
 			cur.Locked = true
 		}
@@ -181,6 +185,21 @@ func WorktreeListPorcelainZ(ctx context.Context, dir string) ([]WorktreeEntry, e
 // main repository.
 func WorktreeAddDetach(ctx context.Context, repoDir, path, oid string) error {
 	_, err := Run(ctx, repoDir, "worktree", "add", "--detach", path, oid)
+	return err
+}
+
+// WorktreeAddDetachLock runs `git worktree add --detach --lock --reason <reason>
+// <path> <oid>` from the main repository. The documented lock reason is the
+// durable ownership marker the explicit cleanup command later verifies.
+func WorktreeAddDetachLock(ctx context.Context, repoDir, path, oid, reason string) error {
+	_, err := Run(ctx, repoDir, "worktree", "add", "--detach", "--lock", "--reason", reason, path, oid)
+	return err
+}
+
+// WorktreeUnlock releases the lock on an owned worktree before its removal. It
+// is the inverse of the --lock used at creation time.
+func WorktreeUnlock(ctx context.Context, repoDir, path string) error {
+	_, err := Run(ctx, repoDir, "worktree", "unlock", path)
 	return err
 }
 

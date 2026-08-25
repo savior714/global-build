@@ -25,6 +25,7 @@ import (
 	"global-build/internal/envelope"
 	"global-build/internal/gitx"
 	"global-build/internal/opencode"
+	"global-build/internal/ownership"
 	"global-build/internal/result"
 	"global-build/internal/watches"
 )
@@ -70,15 +71,35 @@ func (c *Config) fillDefaults() {
 	}
 }
 
+// resolveCacheRoot returns the cache root used for both worktree layout and the
+// liveness lease. An explicit Config.CacheRoot wins; otherwise the platform user
+// cache directory joined with "global-build".
+func resolveCacheRoot(cfg Config) string {
+	cr := cfg.CacheRoot
+	if cr == "" {
+		userCache, err := os.UserCacheDir()
+		if err != nil || userCache == "" {
+			return ""
+		}
+		cr = filepath.Join(userCache, "global-build")
+	}
+	// Canonicalize so the lease path matches the canonical form Git reports for
+	// worktree registrations (and the cleanup command's canonicalized cacheRoot).
+	return gitx.CanonicalPath(cr)
+}
+
 // records are the ownership facts held in process memory for this run.
 type records struct {
-	runID       string
-	commonDir   string   // canonical git common-dir of the target repository
-	repoRoot    string   // canonical main work tree root (git operations run here)
-	worktree    string   // intended worktree path (canonical)
+	runID      string
+	commonDir  string   // canonical git common-dir of the target repository
+	repoRoot   string   // canonical main work tree root (git operations run here)
+	worktree   string   // intended worktree path (canonical)
 	admittedOID string
-	surfaces    []string // normalized WATCH_SURFACES from the envelope
-	hashLen     int
+	surfaces   []string // normalized WATCH_SURFACES from the envelope
+	hashLen    int
+	repoID     string // deterministic repo identity (gitx.RepoID(commonDir))
+	reason     string // durable ownership marker (lock reason)
+	lease      *ownership.Lease
 }
 
 // output accumulates stable stdout keys and prints them deterministically:
@@ -144,11 +165,10 @@ func Run(ctx context.Context, cfg Config, workDir string, input []byte) int {
 	if rerr := preflight(ctx, cfg, rec, logger); rerr != nil {
 		return reportTerminal(out, logger, terminal{exitCode: ExitRunnerError, rerr: rerr})
 	}
-	if err := gitx.WorktreeAddDetach(ctx, rec.repoRoot, rec.worktree, rec.admittedOID); err != nil {
-		rerr := runErr(ErrGeneric, "worktree add failed: %v", err)
+	if rerr := establishLeaseAndWorktree(ctx, cfg, rec, logger); rerr != nil {
 		return reportTerminal(out, logger, terminal{exitCode: ExitRunnerError, rerr: rerr})
 	}
-	logger.Printf("worktree ready: %s (detached at %s)", rec.worktree, rec.admittedOID)
+	logger.Printf("worktree ready: %s (detached+locked at %s)", rec.worktree, rec.admittedOID)
 
 	term := executeAttempts(ctx, cfg, rec, env, out, logger)
 	return reportTerminal(out, logger, term)
@@ -528,12 +548,10 @@ func handleComplete(ctx context.Context, rec *records, surfaces []string, out *o
 		return failCV("candidate ref %s does not resolve to the verified candidate", ref)
 	}
 
-	// Re-prove ownership immediately before destructive removal.
-	if rerr := proveOwnership(ctx, rec, headOID); rerr != nil {
+	// Re-prove ownership immediately before destructive removal, then remove
+	// only this owned worktree and release only its lease.
+	if rerr := removeOwnedWorktree(ctx, rec, headOID, logger); rerr != nil {
 		return terminal{exitCode: ExitRunnerError, rerr: rerr}
-	}
-	if err := gitx.WorktreeRemoveForce(ctx, rec.repoRoot, rec.worktree); err != nil {
-		return terminal{exitCode: ExitRunnerError, rerr: runErr(ErrGeneric, "verified candidate preserved at %s but worktree removal failed: %v", ref, err)}
 	}
 
 	sort.Strings(changed)
@@ -547,11 +565,8 @@ func handleComplete(ctx context.Context, rec *records, surfaces []string, out *o
 // handleDiscardingState finalizes CONTINUABLE / BLOCKED outcomes: validated
 // checkpoint fields are printed, nothing is preserved, worktree is removed.
 func handleDiscardingState(ctx context.Context, rec *records, res *result.Result, out *output, logger *log.Logger, exitCode int) terminal {
-	if rerr := proveOwnership(ctx, rec, ""); rerr != nil {
+	if rerr := removeOwnedWorktree(ctx, rec, "", logger); rerr != nil {
 		return terminal{exitCode: ExitRunnerError, rerr: rerr}
-	}
-	if err := gitx.WorktreeRemoveForce(ctx, rec.repoRoot, rec.worktree); err != nil {
-		return terminal{exitCode: ExitRunnerError, rerr: runErr(ErrGeneric, "worktree removal failed: %v", err)}
 	}
 	for _, k := range res.Keys {
 		out.set(k, res.Fields[k])
@@ -617,12 +632,119 @@ func proveOwnership(ctx context.Context, rec *records, expectedHead string) *Run
 // safeCleanup removes the disposable worktree only while every deterministic
 // identity fact agrees. Any doubt leaves the worktree untouched.
 func safeCleanup(ctx context.Context, rec *records, expectedHead string, logger *log.Logger) *RunError {
+	return removeOwnedWorktree(ctx, rec, expectedHead, logger)
+}
+
+// establishLeaseAndWorktree creates the liveness lease (exclusive advisory lock
+// held for the whole attempt) and the detached, locked disposable worktree whose
+// lock reason is the durable ownership marker.
+func establishLeaseAndWorktree(ctx context.Context, cfg Config, rec *records, logger *log.Logger) *RunError {
+	rec.repoID = gitx.RepoID(rec.commonDir)
+	rec.reason = ownership.BuildReason(rec.repoID, rec.runID, rec.admittedOID)
+
+	cacheRoot := resolveCacheRoot(cfg)
+	if cacheRoot == "" {
+		return runErr(ErrGeneric, "cannot resolve cache root for liveness lease")
+	}
+	lease := ownership.NewLease(cacheRoot, rec.repoID, rec.runID)
+	id := ownership.LeaseIdentity{
+		Version:      ownership.LeaseVersion,
+		RepoID:       rec.repoID,
+		RunID:        rec.runID,
+		AdmittedBase: rec.admittedOID,
+	}
+	if err := lease.Establish(id); err != nil {
+		return runErr(ErrGeneric, "cannot establish run lease: %v", err)
+	}
+	rec.lease = lease
+
+	if err := gitx.WorktreeAddDetachLock(ctx, rec.repoRoot, rec.worktree, rec.admittedOID, rec.reason); err != nil {
+		_ = lease.Release()
+		_ = lease.Remove()
+		rec.lease = nil
+		return runErr(ErrGeneric, "worktree add failed: %v", err)
+	}
+	return nil
+}
+
+// proveOwnershipMarker verifies the live worktree carries exactly the expected
+// global-build ownership lock reason and that it agrees with the run identity.
+func proveOwnershipMarker(ctx context.Context, rec *records) *RunError {
+	entries, err := gitx.WorktreeListPorcelainZ(ctx, rec.repoRoot)
+	if err != nil {
+		return runErr(ErrWorktreeIdentityMismatch, "worktree metadata query failed: %v", err)
+	}
+	var found *gitx.WorktreeEntry
+	for i := range entries {
+		if entries[i].Path == rec.worktree {
+			found = &entries[i]
+			break
+		}
+	}
+	if found == nil {
+		return runErr(ErrWorktreeIdentityMismatch, "worktree %s is not registered", rec.worktree)
+	}
+	if !found.Locked {
+		return runErr(ErrWorktreeIdentityMismatch, "worktree %s is not locked", rec.worktree)
+	}
+	reason, perr := ownership.ParseReason(found.LockReason)
+	if perr != nil {
+		return runErr(ErrWorktreeIdentityMismatch, "lock reason is not valid global-build ownership metadata: %v", perr)
+	}
+	if merr := reason.Matches(rec.repoID, rec.runID, rec.admittedOID); merr != nil {
+		return runErr(ErrWorktreeIdentityMismatch, "%v", merr)
+	}
+	return nil
+}
+
+// removeOwnedWorktree performs the exact Slice-2 destructive removal contract:
+// prove ownership + marker, unlock only the exact worktree, re-prove identity,
+// remove only with `git worktree remove --force <exact-path>`, verify the
+// registration is gone, then remove only this run's lease pathname and release
+// the lease. Any doubt leaks nothing and leaves the worktree untouched.
+func removeOwnedWorktree(ctx context.Context, rec *records, expectedHead string, logger *log.Logger) *RunError {
+	if rerr := proveOwnership(ctx, rec, expectedHead); rerr != nil {
+		return rerr
+	}
+	if rerr := proveOwnershipMarker(ctx, rec); rerr != nil {
+		return rerr
+	}
+	if err := gitx.WorktreeUnlock(ctx, rec.repoRoot, rec.worktree); err != nil {
+		return runErr(ErrGeneric, "worktree unlock failed: %v", err)
+	}
+	// Re-read metadata and re-prove exact identity (path/repo/common-dir/HEAD).
 	if rerr := proveOwnership(ctx, rec, expectedHead); rerr != nil {
 		return rerr
 	}
 	if err := gitx.WorktreeRemoveForce(ctx, rec.repoRoot, rec.worktree); err != nil {
-		return runErr(ErrGeneric, "worktree removal failed despite proven ownership: %v", err)
+		return runErr(ErrGeneric, "verified candidate preserved but worktree removal failed: %v", err)
+	}
+	if stillRegistered(ctx, rec.repoRoot, rec.worktree) {
+		return runErr(ErrGeneric, "worktree %s still registered after removal", rec.worktree)
+	}
+	if rec.lease != nil {
+		if err := rec.lease.Remove(); err != nil && !os.IsNotExist(err) {
+			logger.Printf("lease path removal warning: %v", err)
+		}
+		if err := rec.lease.Release(); err != nil {
+			logger.Printf("lease release warning: %v", err)
+		}
 	}
 	logger.Printf("disposable worktree removed: %s", rec.worktree)
 	return nil
+}
+
+// stillRegistered reports whether a worktree path is still present in the
+// repository's registration after removal.
+func stillRegistered(ctx context.Context, repoDir, path string) bool {
+	entries, err := gitx.WorktreeListPorcelainZ(ctx, repoDir)
+	if err != nil {
+		return true // uncertain: treat as still present to avoid a false success
+	}
+	for _, e := range entries {
+		if e.Path == path {
+			return true
+		}
+	}
+	return false
 }

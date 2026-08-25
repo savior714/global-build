@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
+	"global-build/internal/cleanup"
 	"global-build/internal/opencode"
 	"global-build/internal/runner"
 )
@@ -30,6 +32,16 @@ func main() {
 }
 
 func run() int {
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "cleanup" {
+		return runCleanup(args[1:])
+	}
+	if len(args) > 0 {
+		// No-subcommand stdin BUILD mode is the only other mode. Stray flags
+		// such as `--apply` outside cleanup are rejected.
+		fmt.Fprintf(os.Stderr, "global-build: unexpected argument %q (use 'cleanup' subcommand or stdin BUILD mode)\n", args[0])
+		return runner.ExitRunnerError
+	}
 	input, err := io.ReadAll(os.Stdin)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "global-build: cannot read stdin: %v\n", err)
@@ -70,4 +82,70 @@ func run() int {
 	}
 
 	return runner.Run(context.Background(), cfg, cwd, input)
+}
+
+// runCleanup parses `cleanup [--repo <path>] [--apply]` and delegates to the
+// cleanup package. Discovery is inspect-only unless --apply is given.
+func runCleanup(args []string) int {
+	var repo string
+	apply := false
+	repoCount := 0
+
+	i := 0
+	for i < len(args) {
+		a := args[i]
+		switch a {
+		case "--repo":
+			if i+1 >= len(args) {
+				fmt.Fprintf(os.Stderr, "global-build: --repo requires a path argument\n")
+				return runner.ExitRunnerError
+			}
+			if repoCount > 0 {
+				fmt.Fprintf(os.Stderr, "global-build: --repo may be given exactly once\n")
+				return runner.ExitRunnerError
+			}
+			repo = args[i+1]
+			repoCount++
+			i += 2
+		case "--apply":
+			apply = true
+			i++
+		case "--force-all":
+			fmt.Fprintf(os.Stderr, "global-build: --force-all is not supported\n")
+			return runner.ExitRunnerError
+		default:
+			if strings.HasPrefix(a, "--") {
+				fmt.Fprintf(os.Stderr, "global-build: unknown cleanup option %q\n", a)
+				return runner.ExitRunnerError
+			}
+			fmt.Fprintf(os.Stderr, "global-build: unexpected cleanup argument %q\n", a)
+			return runner.ExitRunnerError
+		}
+	}
+
+	if repoCount == 0 {
+		fmt.Fprintf(os.Stderr, "global-build: cleanup requires --repo <path>\n")
+		return runner.ExitRunnerError
+	}
+	if repo == "" || strings.HasPrefix(repo, "-") {
+		fmt.Fprintf(os.Stderr, "global-build: malformed repository path %q\n", repo)
+		return runner.ExitRunnerError
+	}
+
+	cfg := cleanup.Config{
+		CacheRoot: os.Getenv(envCacheRoot),
+		Out:       os.Stdout,
+		Err:       os.Stderr,
+	}
+	if err := runCleanupOnly(context.Background(), cfg, repo, apply); err != nil {
+		fmt.Fprintf(os.Stderr, "global-build: cleanup failed: %v\n", err)
+		return runner.ExitRunnerError
+	}
+	return 0
+}
+
+// runCleanupOnly is the testable cleanup entry point.
+func runCleanupOnly(ctx context.Context, cfg cleanup.Config, repo string, apply bool) error {
+	_, err := cleanup.Run(ctx, cfg, repo, apply)
+	return err
 }
