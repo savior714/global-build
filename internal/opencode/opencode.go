@@ -58,12 +58,12 @@ type Event struct {
 // terminal-response candidate. Safe for concurrent use: one goroutine feeds
 // Observe while the runner watchdog reads ProgressAt/AnyEvents.
 type Tracker struct {
-	mu          sync.Mutex
-	textOrder   []string        // part ids in first-seen order
-	texts       map[string]Part // deduped by part id, last write wins
-	errors      []string        // serialized error payloads in order
-	lastProg    time.Time       // last meaningful-progress observation
-	eventsSeen  int             // structured events parsed (any type)
+	mu            sync.Mutex
+	textOrder     []string        // part ids in first-seen order
+	texts         map[string]Part // deduped by part id, last write wins
+	errors        []string        // serialized error payloads in order
+	lastProg      time.Time       // last meaningful-progress observation
+	eventsSeen    int             // structured events parsed (any type)
 	sawStepStart  bool
 	sawStepFinish bool
 	sawToolUse    bool
@@ -286,7 +286,7 @@ func BuildInlineConfig(existingContent, worktreeDir string) (string, error) {
 
 	// Broad deny first, exact canonical-worktree allow last.
 	extDir := map[string]string{
-		"*":        "deny",
+		"*":                 "deny",
 		path.Join(wt, "**"): "allow",
 	}
 	extDirRaw, err := json.Marshal(extDir)
@@ -388,6 +388,12 @@ func Invoke(ctx context.Context, bin, worktreeDir, taskBody string, stderrOut io
 		"--agent", AgentName,
 		"--dir", worktreeDir,
 	)
+	// Repository binding: the child's process working directory is pinned to
+	// the exact owned disposable worktree, so it can never inherit the parent
+	// shell's cwd (a potentially different repository) as its mutation root.
+	// --dir remains the supported execution-directory option; cmd.Dir is the
+	// deterministic backstop.
+	cmd.Dir = worktreeDir
 	cmd.Env = childEnv
 	cmd.Stdin = strings.NewReader(taskBody)
 	cmd.WaitDelay = 3 * time.Second // ensure pipes close after forced kill

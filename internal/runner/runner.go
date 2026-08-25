@@ -4,6 +4,12 @@
 //	-> strict result protocol validation -> deterministic candidate checks
 //	-> candidate ref -> identity-proved worktree removal.
 //
+// The mutating target repository is always an explicitly requested locator;
+// it is canonicalized and bound to a proven Git identity (toplevel/common-dir)
+// before any ownership lease, task worktree, candidate ref, or executor
+// invocation. The process working directory is never used to select a
+// mutating target.
+//
 // The runner is stateless: everything it needs lives in process memory for the
 // duration of one run. There is no daemon, task database, queue, or registry,
 // and there is no publication step in this slice.
@@ -88,18 +94,22 @@ func resolveCacheRoot(cfg Config) string {
 	return gitx.CanonicalPath(cr)
 }
 
-// records are the ownership facts held in process memory for this run.
+// records are the ownership facts held in process memory for this run. The
+// repository locator (where the caller requested) and the repository identity
+// (what Git proved that locator actually is) are kept separate: downstream
+// ownership/worktree validation binds to the identity only.
 type records struct {
-	runID      string
-	commonDir  string   // canonical git common-dir of the target repository
-	repoRoot   string   // canonical main work tree root (git operations run here)
-	worktree   string   // intended worktree path (canonical)
+	runID       string
+	repoLocator string // canonical explicitly-requested repository locator (never cwd)
+	commonDir   string // canonical git common-dir of the target repository
+	repoRoot    string // canonical main work tree root (git operations run here)
+	worktree    string // intended worktree path (canonical)
 	admittedOID string
-	surfaces   []string // normalized WATCH_SURFACES from the envelope
-	hashLen    int
-	repoID     string // deterministic repo identity (gitx.RepoID(commonDir))
-	reason     string // durable ownership marker (lock reason)
-	lease      *ownership.Lease
+	surfaces    []string // normalized WATCH_SURFACES from the envelope
+	hashLen     int
+	repoID      string // deterministic repo identity (gitx.RepoID(commonDir))
+	reason      string // durable ownership marker (lock reason)
+	lease       *ownership.Lease
 }
 
 // output accumulates stable stdout keys and prints them deterministically:
@@ -141,8 +151,12 @@ type terminal struct {
 	rerr     *RunError // set only for MALFORMED_RESULT / RUNNER_ERROR paths
 }
 
-// Run executes one BUILD attempt rooted at workDir and returns the exit code.
-func Run(ctx context.Context, cfg Config, workDir string, input []byte) int {
+// Run executes one BUILD attempt for the explicitly requested repository
+// locator and returns the exit code. The process working directory is NEVER
+// used to select the mutating target: repoLocator must name the exact
+// repository the caller intends to mutate, and it is canonicalized and bound
+// to a proven Git identity before any mutation can occur.
+func Run(ctx context.Context, cfg Config, repoLocator string, input []byte) int {
 	cfg.fillDefaults()
 	logger := log.New(cfg.Stderr, "global-build ", log.LstdFlags)
 
@@ -158,7 +172,7 @@ func Run(ctx context.Context, cfg Config, workDir string, input []byte) int {
 	out.set("RUN_ID", env.RunID)
 	out.set("ADMITTED_BASE", env.AdmittedBase)
 
-	rec, rerr := resolveRepository(workDir, env)
+	rec, rerr := resolveRepository(repoLocator, env)
 	if rerr != nil {
 		return reportTerminal(out, logger, terminal{exitCode: ExitRunnerError, rerr: rerr})
 	}
@@ -211,39 +225,93 @@ func parseEnvelope(input []byte) (*envelope.Envelope, *RunError) {
 	return env, nil
 }
 
-// resolveRepository pins the target repository identity from the working
-// directory and verifies admitted_base resolves to an exact commit there.
-func resolveRepository(workDir string, env *envelope.Envelope) (*records, *RunError) {
+// resolveRepository binds the explicitly requested repository to a proven Git
+// identity. The caller MUST supply the target repository explicitly; the
+// process working directory is never used to select a mutating target, so a
+// wrong cwd can never become a valid mutating admission.
+//
+// Binding chain — every step must describe the same repository before any
+// mutation is authorized:
+//
+//	explicitly requested repository (locator)
+//	  -> canonical requested path (symlinks resolved)
+//	  -> resolved Git toplevel / common-dir
+//	  -> expected repository identity (gitx.RepoID(commonDir))
+//	  -> owned task worktree parent identity
+func resolveRepository(repoLocator string, env *envelope.Envelope) (*records, *RunError) {
 	ctx := context.Background()
-	if !gitx.IsWorkTree(ctx, workDir) {
-		return nil, runErr(ErrMalformedInput, "working directory %q is not inside a git work tree", workDir)
+
+	// 1. The locator must be explicit. An empty locator is a hard refusal:
+	//    there is no implicit-cwd fallback for mutating execution.
+	if repoLocator == "" {
+		return nil, runErr(ErrMalformedInput, "a target repository must be specified explicitly; the process working directory is never used as the mutating target")
 	}
-	commonDir, err := gitx.CanonicalCommonDir(ctx, workDir)
+
+	// 2. The requested repository path must resolve canonically.
+	canon, err := filepath.EvalSymlinks(repoLocator)
 	if err != nil {
-		return nil, runErr(ErrMalformedInput, "cannot resolve canonical common dir: %v", err)
+		return nil, runErr(ErrMalformedInput, "requested repository %q cannot be resolved canonically: %v", repoLocator, err)
 	}
-	rootOut, err := gitx.Run(ctx, workDir, "rev-parse", "--show-toplevel")
+
+	// 3. It must be a valid Git work tree of the supported form.
+	if !gitx.IsWorkTree(ctx, canon) {
+		return nil, runErr(ErrMalformedInput, "requested repository %q is not inside a git work tree", canon)
+	}
+
+	// 4. Resolve the canonical common-dir identity of that repository.
+	commonDir, err := gitx.CanonicalCommonDir(ctx, canon)
 	if err != nil {
-		return nil, runErr(ErrMalformedInput, "cannot resolve work tree root: %v", err)
+		return nil, runErr(ErrMalformedInput, "cannot resolve canonical common dir for %q: %v", canon, err)
+	}
+
+	// 5. Resolve the canonical Git toplevel: the repository actually operated on.
+	rootOut, err := gitx.Run(ctx, canon, "rev-parse", "--show-toplevel")
+	if err != nil {
+		return nil, runErr(ErrMalformedInput, "cannot resolve work tree root for %q: %v", canon, err)
 	}
 	repoRoot, err := filepath.EvalSymlinks(strings.TrimSpace(rootOut))
 	if err != nil {
-		return nil, runErr(ErrMalformedInput, "cannot canonicalize work tree root: %v", err)
+		return nil, runErr(ErrMalformedInput, "cannot canonicalize work tree root for %q: %v", canon, err)
 	}
+
+	// 6. Fail closed unless the canonical requested locator and the resolved
+	//    toplevel describe the same repository (locator equal to or contained
+	//    within the toplevel). Both are realpaths, so this is exact evidence,
+	//    not basename branding.
+	if !pathWithin(repoRoot, canon) {
+		return nil, runErr(ErrMalformedInput, "requested repository %q does not resolve inside its own git toplevel %q", canon, repoRoot)
+	}
+
+	// 7. Identity binding: admitted_base must resolve to an exact commit in
+	//    THIS repository. An admitted base belonging to another repository is
+	//    an identity mismatch and fails before any lease, worktree, ref, or
+	//    executor invocation.
 	if !gitx.ResolveCommit(ctx, repoRoot, env.AdmittedBase) {
-		return nil, runErr(ErrMalformedInput, "admitted_base %s does not resolve to an exact commit in this repository", env.AdmittedBase)
+		return nil, runErr(ErrMalformedInput, "admitted_base %s does not resolve to an exact commit in the requested repository %q", env.AdmittedBase, canon)
 	}
+
 	ref := candidateRefPrefix + env.RunID
 	if !gitx.CheckRefFormat(ctx, ref) {
 		return nil, runErr(ErrMalformedInput, "run_id %q does not form a valid git ref name", env.RunID)
 	}
 	return &records{
 		runID:       env.RunID,
+		repoLocator: canon,
 		commonDir:   commonDir,
 		repoRoot:    repoRoot,
 		admittedOID: env.AdmittedBase,
 		surfaces:    env.WatchSurfaces,
 	}, nil
+}
+
+// pathWithin reports whether child equals parent or lies strictly inside it.
+// Both arguments must already be canonical (realpath) absolute paths.
+func pathWithin(parent, child string) bool {
+	if parent == child {
+		return true
+	}
+	sep := string(os.PathSeparator)
+	return strings.HasPrefix(child, strings.TrimSuffix(parent, sep)+sep)
 }
 
 // preflight performs cheap fail-fast checks before any mutation: the cache
