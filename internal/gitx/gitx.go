@@ -312,3 +312,149 @@ func RepoID(commonDir string) string {
 	sum := sha256.Sum256([]byte(commonDir))
 	return hex.EncodeToString(sum[:])[:16]
 }
+
+// IsFullOID reports whether s is a full git object id in either supported
+// object format (sha1 => 40 hex, sha256 => 64 hex).
+func IsFullOID(s string) bool {
+	if len(s) != 40 && len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= '0' && c <= '9':
+		case c >= 'a' && c <= 'f':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// DeleteRefCAS deletes refname only when its current value equals expectedOID,
+// using `git update-ref -d <ref> <oldvalue>`. Any mismatch (ref missing,
+// pointing elsewhere, or concurrent change) leaves the ref untouched and
+// returns an error. The ref is never rewritten.
+func DeleteRefCAS(ctx context.Context, repoDir, refname, expectedOID string) error {
+	code, _, err := RunExit(ctx, repoDir, "update-ref", "-d", refname, expectedOID)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("delete-ref %s CAS (expected %s) failed", refname, expectedOID)
+	}
+	return nil
+}
+
+// RevListCount returns the number of commits reachable from `to` but not from
+// `from` (i.e. the size of from..to), using `git rev-list --count`.
+func RevListCount(ctx context.Context, repoDir, from, to string) (int, error) {
+	out, err := Run(ctx, repoDir, "rev-list", "--count", from+".."+to)
+	if err != nil {
+		return 0, err
+	}
+	n, err := parseInt(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("rev-list --count: %w", err)
+	}
+	return n, nil
+}
+
+// MergeCountInRange returns the number of merge commits in from..to, using
+// `git rev-list --count --merges from..to`. A non-zero result means the range
+// contains at least one merge commit.
+func MergeCountInRange(ctx context.Context, repoDir, from, to string) (int, error) {
+	out, err := Run(ctx, repoDir, "rev-list", "--count", "--merges", from+".."+to)
+	if err != nil {
+		return 0, err
+	}
+	n, err := parseInt(strings.TrimSpace(out))
+	if err != nil {
+		return 0, fmt.Errorf("rev-list --merges: %w", err)
+	}
+	return n, nil
+}
+
+// RemoteRefErrorKind classifies a non-mutating remote ref read failure.
+type RemoteRefErrorKind string
+
+const (
+	// RemoteRefNoSuch means the queried ref does not exist on the remote.
+	RemoteRefNoSuch RemoteRefErrorKind = "NO_SUCH_REF"
+	// RemoteRefAmbiguous means the query returned more than one ref line.
+	RemoteRefAmbiguous RemoteRefErrorKind = "AMBIGUOUS"
+	// RemoteRefUnexpected means the output could not be parsed into exactly one
+	// valid OID/ref line.
+	RemoteRefUnexpected RemoteRefErrorKind = "UNEXPECTED_OUTPUT"
+	// RemoteRefGitFailure means git itself could not be executed or returned an
+	// unexpected non-zero exit code.
+	RemoteRefGitFailure RemoteRefErrorKind = "GIT_FAILURE"
+)
+
+// RemoteRefError is the typed, fail-closed result of ReadRemoteBranchOID.
+type RemoteRefError struct {
+	Kind RemoteRefErrorKind
+	Msg  string
+}
+
+func (e *RemoteRefError) Error() string { return e.Msg }
+
+// ReadRemoteBranchOID is the single narrow, non-mutating helper shared by the
+// publisher and the continuation freshness check. It reads the live OID of
+// refs/heads/<branch> at <remote> via `git ls-remote --exit-code`, performs no
+// local ref mutation, supports both object formats, and fails closed: exactly
+// one <oid>\t<ref> line carrying a valid full OID is required.
+func ReadRemoteBranchOID(ctx context.Context, repoDir, remote, branch string) (string, *RemoteRefError) {
+	ref := "refs/heads/" + branch
+	code, out, err := RunExit(ctx, repoDir, "ls-remote", "--exit-code", remote, ref)
+	if err != nil {
+		return "", &RemoteRefError{Kind: RemoteRefGitFailure, Msg: fmt.Sprintf("git ls-remote failed: %v", err)}
+	}
+	switch code {
+	case 0:
+		// proceed to parse
+	case 2:
+		return "", &RemoteRefError{Kind: RemoteRefNoSuch, Msg: fmt.Sprintf("remote %s has no ref %s", remote, ref)}
+	default:
+		return "", &RemoteRefError{Kind: RemoteRefGitFailure, Msg: fmt.Sprintf("git ls-remote exited %d for %s %s", code, remote, ref)}
+	}
+
+	var oids []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Expected: "<oid>\t<ref>"; ls-remote may also emit a peeled
+		// "<oid>\t<ref>^{}" line for annotated tags, but for an exact branch
+		// ref we expect exactly one primary line.
+		parts := strings.SplitN(line, "\t", 2)
+		if len(parts) != 2 {
+			return "", &RemoteRefError{Kind: RemoteRefUnexpected, Msg: fmt.Sprintf("unparseable ls-remote line %q", line)}
+		}
+		oid := parts[0]
+		if !IsFullOID(oid) {
+			return "", &RemoteRefError{Kind: RemoteRefUnexpected, Msg: fmt.Sprintf("ls-remote returned non-OID %q", oid)}
+		}
+		if parts[1] == ref {
+			oids = append(oids, oid)
+		}
+	}
+	if len(oids) == 0 {
+		return "", &RemoteRefError{Kind: RemoteRefNoSuch, Msg: fmt.Sprintf("remote %s has no ref %s", remote, ref)}
+	}
+	if len(oids) > 1 {
+		return "", &RemoteRefError{Kind: RemoteRefAmbiguous, Msg: fmt.Sprintf("ls-remote returned %d matches for %s", len(oids), ref)}
+	}
+	return oids[0], nil
+}
+
+func parseInt(s string) (int, error) {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("not an integer: %q", s)
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, nil
+}

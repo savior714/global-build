@@ -33,14 +33,20 @@ func main() {
 
 func run() int {
 	args := os.Args[1:]
-	if len(args) > 0 && args[0] == "cleanup" {
-		return runCleanup(args[1:])
-	}
 	if len(args) > 0 {
-		// No-subcommand stdin BUILD mode is the only other mode. Stray flags
-		// such as `--apply` outside cleanup are rejected.
-		fmt.Fprintf(os.Stderr, "global-build: unexpected argument %q (use 'cleanup' subcommand or stdin BUILD mode)\n", args[0])
-		return runner.ExitRunnerError
+		switch args[0] {
+		case "cleanup":
+			return runCleanup(args[1:])
+		case "publish":
+			return runPublish(args[1:])
+		case "continuation-check":
+			return runContinuationCheck(args[1:])
+		default:
+			// No-subcommand stdin BUILD mode is the only other mode. Stray
+			// flags such as `--apply` outside a known subcommand are rejected.
+			fmt.Fprintf(os.Stderr, "global-build: unknown subcommand %q (use 'cleanup', 'publish', 'continuation-check', or stdin BUILD mode)\n", args[0])
+			return runner.ExitRunnerError
+		}
 	}
 	input, err := io.ReadAll(os.Stdin)
 	if err != nil {
