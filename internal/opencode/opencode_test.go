@@ -282,3 +282,226 @@ func TestEmptyExistingConfigIsValid(t *testing.T) {
 		t.Errorf("global external_directory: allow must never be set:\n%s", merged)
 	}
 }
+
+// --- proof: canonical worker overrides stale inline config -------------------
+
+func TestCanonicalWorkerOverridesStaleConfig(t *testing.T) {
+	// Simulate an invocation that carries stale worker fields from a prior
+	// run or from the installed home-directory agent file: steps still at 35,
+	// websearch weakened to allow, and an invocation-specific model value.
+	stale := `{
+  "model": { "provider": "openai", "name": "gpt-5" },
+  "agent": {
+    "global-build-worker": {
+      "steps": 35,
+      "mode": "secondary",
+      "prompt": "STALE WORKER PROMPT",
+      "model": { "provider": "anthropic", "name": "claude-opus-4" },
+      "variant": "fast",
+      "permission": {
+        "edit": "allow",
+        "websearch": "allow",
+        "shell": "ask"
+      }
+    },
+    "some-other-agent": {
+      "description": "untouched",
+      "permission": { "external_directory": { "/other/**": "allow" } }
+    }
+  },
+  "topLevelKey": "preserved"
+}`
+	t.Setenv(EnvConfigContent, stale)
+	base := t.TempDir()
+	wt, allowKey := canonicalAllowKey(t, base, "run-a")
+
+	merged, err := BuildInlineConfig(stale, wt)
+	if err != nil {
+		t.Fatalf("BuildInlineConfig: %v", err)
+	}
+
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(merged), &root); err != nil {
+		t.Fatalf("merged config invalid: %v", err)
+	}
+
+	// Top-level unrelated field preserved.
+	if _, ok := root["topLevelKey"]; !ok {
+		t.Errorf("top-level 'topLevelKey' was dropped during merge")
+	}
+
+	// Other agent untouched.
+	var agents map[string]json.RawMessage
+	if err := json.Unmarshal(root["agent"], &agents); err != nil {
+		t.Fatalf("agent block invalid: %v", err)
+	}
+	var other struct {
+		Description string `json:"description"`
+		Permission  struct {
+			ExternalDirectory map[string]string `json:"external_directory"`
+		} `json:"permission"`
+	}
+	if err := json.Unmarshal(agents["some-other-agent"], &other); err != nil {
+		t.Fatalf("some-other-agent invalid: %v", err)
+	}
+	if other.Description != "untouched" {
+		t.Errorf("some-other-agent description changed")
+	}
+	mustContain(t, other.Permission.ExternalDirectory, "/other/**", "allow")
+
+	// --- Worker fields: canonical wins ----------------------------------------
+	var worker struct {
+		Description string                     `json:"description"`
+		Mode        string                     `json:"mode"`
+		Steps       int                        `json:"steps"`
+		Prompt      string                     `json:"prompt"`
+		Model       json.RawMessage            `json:"model"`
+		Variant     string                     `json:"variant"`
+		Permission  map[string]json.RawMessage `json:"permission"`
+	}
+	if err := json.Unmarshal(agents[AgentName], &worker); err != nil {
+		t.Fatalf("worker block invalid: %v", err)
+	}
+
+	if worker.Mode != "primary" {
+		t.Errorf("mode = %q, want primary (canonical override)", worker.Mode)
+	}
+	if worker.Steps != 50 {
+		t.Errorf("steps = %d, want 50 (canonical override of stale 35)", worker.Steps)
+	}
+
+	// The stale prompt MUST be replaced by the exact repo-owned canonical body.
+	wantBody, err := CanonicalWorkerBody()
+	if err != nil {
+		t.Fatalf("CanonicalWorkerBody: %v", err)
+	}
+	if worker.Prompt != wantBody {
+		t.Errorf("prompt not overridden by canonical body:\n--- got ---\n%s\n--- want ---\n%s", worker.Prompt, wantBody)
+	}
+
+	// Worker-scoped model/variant are NOT owned by the canonical source, so they
+	// must survive the merge untouched.
+	if len(worker.Model) == 0 {
+		t.Errorf("worker-scoped model was dropped during merge")
+	} else {
+		var wm struct {
+			Provider string `json:"provider"`
+			Name     string `json:"name"`
+		}
+		if err := json.Unmarshal(worker.Model, &wm); err != nil {
+			t.Fatalf("worker model invalid: %v", err)
+		}
+		if wm.Provider != "anthropic" || wm.Name != "claude-opus-4" {
+			t.Errorf("worker model = %s, want anthropic/claude-opus-4 (preserved)", worker.Model)
+		}
+	}
+	if worker.Variant != "fast" {
+		t.Errorf("worker variant = %q, want %q (preserved)", worker.Variant, "fast")
+	}
+
+	perm := worker.Permission
+
+	if perm["websearch"] == nil {
+		t.Errorf("canonical websearch deny missing from merged permission")
+	} else {
+		var ws string
+		if err := json.Unmarshal(perm["websearch"], &ws); err != nil {
+			t.Fatalf("websearch value invalid: %v", err)
+		}
+		if ws != "deny" {
+			t.Errorf("websearch = %q, want deny (canonical override of stale allow)", ws)
+		}
+	}
+
+	if perm["edit"] == nil {
+		t.Errorf("canonical edit allow missing from merged permission")
+	} else {
+		var ed string
+		if err := json.Unmarshal(perm["edit"], &ed); err != nil {
+			t.Fatalf("edit value invalid: %v", ed)
+		}
+		if ed != "allow" {
+			t.Errorf("edit = %q, want allow", ed)
+		}
+	}
+
+	// External invocation-specific model is preserved because canonical does not own it.
+	if _, ok := root["model"]; !ok {
+		t.Errorf("invocation-specific model was dropped during merge")
+	}
+
+	// External_directory dynamic rule is still applied.
+	ext := workerExtDir(t, merged)
+	mustContain(t, ext, "*", "deny")
+	mustContain(t, ext, allowKey, "allow")
+
+	// Canonical description is present.
+	if worker.Description == "" {
+		t.Errorf("canonical description missing from merged worker")
+	}
+}
+
+// --- proof: empty incoming config produces full canonical worker definition --
+
+func TestEmptyIncomingConfigProducesFullCanonicalWorker(t *testing.T) {
+	t.Setenv(EnvConfigContent, "")
+	base := t.TempDir()
+	wt, allowKey := canonicalAllowKey(t, base, "run-a")
+
+	merged, err := BuildInlineConfig("", wt)
+	if err != nil {
+		t.Fatalf("BuildInlineConfig: %v", err)
+	}
+
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(merged), &root); err != nil {
+		t.Fatalf("merged config invalid: %v", err)
+	}
+
+	var agents map[string]json.RawMessage
+	if err := json.Unmarshal(root["agent"], &agents); err != nil {
+		t.Fatalf("agent block invalid: %v", err)
+	}
+
+	var worker struct {
+		Description string                     `json:"description"`
+		Mode        string                     `json:"mode"`
+		Steps       int                        `json:"steps"`
+		Prompt      string                     `json:"prompt"`
+		Permission  map[string]json.RawMessage `json:"permission"`
+	}
+	if err := json.Unmarshal(agents[AgentName], &worker); err != nil {
+		t.Fatalf("worker block invalid: %v", err)
+	}
+
+	if worker.Mode != "primary" {
+		t.Errorf("mode = %q, want primary", worker.Mode)
+	}
+	if worker.Steps != 50 {
+		t.Errorf("steps = %d, want 50", worker.Steps)
+	}
+	if worker.Description == "" {
+		t.Errorf("canonical description missing from empty-input config")
+	}
+
+	// The generated full worker must carry the exact repo-owned canonical body
+	// as its runtime prompt.
+	wantBody, err := CanonicalWorkerBody()
+	if err != nil {
+		t.Fatalf("CanonicalWorkerBody: %v", err)
+	}
+	if worker.Prompt != wantBody {
+		t.Errorf("empty-input worker prompt missing/!canonical body:\n--- got ---\n%s\n--- want ---\n%s", worker.Prompt, wantBody)
+	}
+
+	perm := worker.Permission
+	for _, key := range []string{"edit", "webfetch", "websearch", "question", "task"} {
+		if perm[key] == nil {
+			t.Errorf("canonical permission key %q missing from empty-input config", key)
+		}
+	}
+
+	ext := workerExtDir(t, merged)
+	mustContain(t, ext, "*", "deny")
+	mustContain(t, ext, allowKey, "allow")
+}
