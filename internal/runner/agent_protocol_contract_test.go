@@ -23,15 +23,26 @@ func TestAgentFinalProtocolExamplesAreBare(t *testing.T) {
 	if strings.Contains(body, "```") {
 		t.Fatal("worker final-protocol examples must not contain Markdown code fences")
 	}
+
+	// Prose line wrapping is not semantically significant; normalize it for the
+	// instruction guards, while keeping protocol-line adjacency checks exact.
+	prose := strings.Join(strings.Fields(body), " ")
 	for _, required := range []string{
 		"Do NOT wrap the protocol in Markdown code fences",
 		"first non-whitespace characters of the final assistant message must be `RESULT:`",
+	} {
+		if !strings.Contains(prose, required) {
+			t.Errorf("worker body missing bare-protocol instruction %q", required)
+		}
+	}
+
+	for _, required := range []string{
 		"RESULT: COMPLETE\nPRIMARY_PROOF: PASS",
 		"RESULT: CONTINUABLE\nADMITTED_BASE:",
 		"RESULT: BLOCKED\nBLOCKER:",
 	} {
 		if !strings.Contains(body, required) {
-			t.Errorf("worker body missing bare-protocol guard %q", required)
+			t.Errorf("worker body missing bare protocol lines %q", required)
 		}
 	}
 }
