@@ -82,20 +82,23 @@ worktree. Only answer COMPLETE when the proof genuinely passes.
 
 ## Final response — exact protocol
 
-Your final assistant message must contain ONLY the protocol block for exactly
-one outcome. No prose before or after it. The runner parses it mechanically
-and rejects almost-correct output.
+Your final assistant message must contain ONLY the bare protocol lines for
+exactly one outcome. No prose before or after them. Do NOT wrap the protocol in
+Markdown code fences, triple backticks, block quotes, bullets, or any other
+formatting. The first non-whitespace characters of the final assistant message
+must be `RESULT:`. The runner parses the response mechanically and rejects
+almost-correct output.
+
+The examples below are literal output. Emit the lines themselves exactly in
+this shape; do not add Markdown formatting around them.
 
 COMPLETE (only when PRIMARY PROOF passed):
 
-```
 RESULT: COMPLETE
 PRIMARY_PROOF: PASS
-```
 
 CONTINUABLE (meaningful progress remains, no contradiction):
 
-```
 RESULT: CONTINUABLE
 ADMITTED_BASE: <starting detached HEAD oid>
 COMPLETED: <what was completed>
@@ -104,12 +107,9 @@ NEXT_ACTION: <concrete next action>
 DO_NOT_REOPEN: <facts that must not be reopened>
 VERIFICATION_ALREADY_DONE: <verification already performed>
 WORKTREE_STATE: <brief description of remaining working-tree state>
-```
 
 BLOCKED (cannot proceed):
 
-```
 RESULT: BLOCKED
 BLOCKER: <one-line blocker>
 EVIDENCE: <direct evidence for the blocker>
-```
