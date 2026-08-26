@@ -1,12 +1,11 @@
 package runner
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"global-build/internal/envelope"
+	"global-build/internal/opencode"
 )
 
 // TestEnvelopeParseValid checks the canonical envelope parses and that the
@@ -99,18 +98,14 @@ func TestEnvelopeBodySectionValidation(t *testing.T) {
 	}
 }
 
-// TestAgentContractSmoke guards the generated global worker agent against
+// TestAgentContractSmoke guards the repo-owned canonical worker agent against
 // accidental drift: wrong mode, wrong steps value, weakened permissions, or a
-// missing publication prohibition.
+// missing publication prohibition. The source of truth is the embedded file at
+// internal/opencode/global-build-worker.md, not the installed home-directory copy.
 func TestAgentContractSmoke(t *testing.T) {
-	home, err := os.UserHomeDir()
+	raw, err := opencode.EmbeddedWorkerSource()
 	if err != nil {
-		t.Fatalf("UserHomeDir: %v", err)
-	}
-	path := filepath.Join(home, ".config", "opencode", "agents", "global-build-worker.md")
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("worker agent file must exist at %s: %v", path, err)
+		t.Fatalf("cannot read embedded worker source: %v", err)
 	}
 	text := string(raw)
 
@@ -141,8 +136,8 @@ func TestAgentContractSmoke(t *testing.T) {
 	if fm.Mode != "primary" {
 		t.Errorf("mode = %q, want primary", fm.Mode)
 	}
-	if fm.Steps != 35 {
-		t.Errorf("steps = %d, want exactly 35", fm.Steps)
+	if fm.Steps != 50 {
+		t.Errorf("steps = %d, want exactly 50", fm.Steps)
 	}
 	if fm.Permission.Edit != "allow" {
 		t.Errorf("edit permission = %q, want allow", fm.Permission.Edit)

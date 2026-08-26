@@ -11,6 +11,7 @@ package opencode
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,8 +23,20 @@ import (
 	"sync"
 	"time"
 
+	"go.yaml.in/yaml/v3"
+
 	"global-build/internal/gitx"
 )
+
+//go:embed global-build-worker.md
+var canonicalWorkerSource []byte
+
+// EmbeddedWorkerSource returns the raw bytes of the repo-owned canonical worker
+// definition. Exported only so cross-package tests can inspect it without
+// reaching for the installed home-directory copy.
+func EmbeddedWorkerSource() ([]byte, error) {
+	return canonicalWorkerSource, nil
+}
 
 // EnvConfigContent is OpenCode's runtime inline configuration mechanism: when
 // set in the environment of a spawned OpenCode process, its JSON value is merged
@@ -233,6 +246,29 @@ type Attempt struct {
 	Cancelled     bool  // context cancelled while running (timeout/interrupt)
 }
 
+func canonicalWorkerFrontmatter() (map[string]json.RawMessage, error) {
+	text := string(canonicalWorkerSource)
+	parts := strings.SplitN(text, "---", 3)
+	if len(parts) < 3 {
+		return nil, fmt.Errorf("embedded worker source lacks frontmatter delimiters")
+	}
+	// Parse YAML into a generic map so key casing is preserved exactly as in
+	// the source (lowercase), then marshal to JSON for uniform merging.
+	var rawMap map[string]interface{}
+	if err := yaml.Unmarshal([]byte(parts[1]), &rawMap); err != nil {
+		return nil, fmt.Errorf("embedded worker frontmatter is not valid YAML: %w", err)
+	}
+	out, err := json.Marshal(rawMap)
+	if err != nil {
+		return nil, fmt.Errorf("cannot marshal canonical worker frontmatter to JSON: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("cannot re-parse canonical worker frontmatter: %w", err)
+	}
+	return raw, nil
+}
+
 // BuildInlineConfig returns the merged OPENCODE_CONFIG_CONTENT JSON string for
 // a single run. It grants agent global-build-worker external_directory access
 // ONLY to the exact canonical worktree, while denying everything else, WITHOUT
@@ -245,6 +281,12 @@ type Attempt struct {
 //	  "*":                     "deny",
 //	  "<canonicalWorktree>/**": "allow",
 //	}
+//
+// The canonical worker source (internal/opencode/global-build-worker.md) owns
+// description, mode, steps, and the full permission block. These fields always
+// override any stale values carried in existingContent. An invocation-specific
+// model/variant (if present in existingContent) is preserved because the
+// canonical source does not own a model field.
 //
 // existingContent is the parent process's current OPENCODE_CONFIG_CONTENT (it
 // may be empty). It is parsed as JSON; any malformed value fails closed so a
@@ -270,6 +312,15 @@ func BuildInlineConfig(existingContent, worktreeDir string) (string, error) {
 		}
 	}
 
+	// Load the repo-owned canonical worker frontmatter. Canonical fields always
+	// win over stale external values; unrelated invocation-specific fields
+	// (e.g. model/variant) are preserved because the canonical source does not
+	// own them.
+	canonicalFM, err := canonicalWorkerFrontmatter()
+	if err != nil {
+		return "", fmt.Errorf("cannot load canonical worker source: %w", err)
+	}
+
 	worker := map[string]json.RawMessage{}
 	if raw, ok := agents[AgentName]; ok {
 		if err := json.Unmarshal(raw, &worker); err != nil {
@@ -277,10 +328,33 @@ func BuildInlineConfig(existingContent, worktreeDir string) (string, error) {
 		}
 	}
 
-	perm := map[string]json.RawMessage{}
-	if raw, ok := worker["permission"]; ok {
-		if err := json.Unmarshal(raw, &perm); err != nil {
-			return "", fmt.Errorf("existing %s permission block is not a valid object: %w", AgentName, err)
+	// Merge canonical-owned fields into the worker block. Canonical source does
+	// NOT own "model", so any invocation-specific model/variant is preserved.
+	for k, v := range canonicalFM {
+		if k == "permission" {
+			// Merge permission sub-fields: canonical denies always win, but any
+			// external sub-field not present in the canonical source is preserved.
+			canonicalPerm := map[string]json.RawMessage{}
+			if err := json.Unmarshal(v, &canonicalPerm); err != nil {
+				return "", fmt.Errorf("canonical worker permission is not valid JSON: %w", err)
+			}
+			extPerm := map[string]json.RawMessage{}
+			if raw, ok := worker["permission"]; ok {
+				if err := json.Unmarshal(raw, &extPerm); err != nil {
+					return "", fmt.Errorf("existing %s permission block is not a valid object: %w", AgentName, err)
+				}
+			}
+			for pk, pv := range canonicalPerm {
+				extPerm[pk] = pv
+			}
+			permRaw, err := json.Marshal(extPerm)
+			if err != nil {
+				return "", fmt.Errorf("cannot encode merged %s permission: %w", AgentName, err)
+			}
+			worker["permission"] = permRaw
+		} else {
+			// Top-level canonical-owned field overrides whatever was there.
+			worker[k] = v
 		}
 	}
 
@@ -293,13 +367,22 @@ func BuildInlineConfig(existingContent, worktreeDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot encode external_directory override: %w", err)
 	}
-	perm["external_directory"] = extDirRaw
-
-	permRaw, err := json.Marshal(perm)
-	if err != nil {
-		return "", fmt.Errorf("cannot encode permission override: %w", err)
+	if permRaw, ok := worker["permission"]; ok {
+		extPerm := map[string]json.RawMessage{}
+		if err := json.Unmarshal(permRaw, &extPerm); err != nil {
+			return "", fmt.Errorf("cannot re-parse merged %s permission: %w", AgentName, err)
+		}
+		extPerm["external_directory"] = extDirRaw
+		permMarshaled, err := json.Marshal(extPerm)
+		if err != nil {
+			return "", fmt.Errorf("cannot encode external_directory override: %w", err)
+		}
+		worker["permission"] = permMarshaled
+	} else {
+		// Should not happen, but be defensive.
+		permMarshaled, _ := json.Marshal(map[string]json.RawMessage{"external_directory": extDirRaw})
+		worker["permission"] = permMarshaled
 	}
-	worker["permission"] = permRaw
 
 	workerRaw, err := json.Marshal(worker)
 	if err != nil {
