@@ -124,7 +124,7 @@ func TestAgentContractSmoke(t *testing.T) {
 			Webfetch  string            `yaml:"webfetch"`
 			Websearch string            `yaml:"websearch"`
 			Question  string            `yaml:"question"`
-			Task      string            `yaml:"task"`
+			Task      map[string]string `yaml:"task"`
 			Bash      map[string]string `yaml:"bash"`
 		} `yaml:"permission"`
 	}
@@ -142,11 +142,30 @@ func TestAgentContractSmoke(t *testing.T) {
 	if fm.Permission.Edit != "allow" {
 		t.Errorf("edit permission = %q, want allow", fm.Permission.Edit)
 	}
-	for _, key := range []string{"Webfetch", "Websearch", "Question", "Task"} {
-		v := map[string]string{"Webfetch": fm.Permission.Webfetch, "Websearch": fm.Permission.Websearch, "Question": fm.Permission.Question, "Task": fm.Permission.Task}[key]
+	for _, key := range []string{"Webfetch", "Websearch", "Question"} {
+		v := map[string]string{"Webfetch": fm.Permission.Webfetch, "Websearch": fm.Permission.Websearch, "Question": fm.Permission.Question}[key]
 		if v != "deny" {
 			t.Errorf("%s permission = %q, want deny", key, v)
 		}
+	}
+
+	task := fm.Permission.Task
+	if task["*"] != "deny" {
+		t.Errorf(`task["*"] = %q, want "deny"`, task["*"])
+	}
+	if task["explore"] != "allow" {
+		t.Errorf(`task["explore"] = %q, want "allow"`, task["explore"])
+	}
+	if len(task) != 2 {
+		t.Errorf("task permission must admit only explore; got %v", task)
+	}
+
+	// Ordered task rules: broad deny FIRST, narrow explore allow LAST
+	// (OpenCode permission matching is last-match-wins).
+	taskDenyIdx := strings.Index(frontmatterText, `"*": deny`)
+	exploreAllowIdx := strings.Index(frontmatterText, `explore: allow`)
+	if taskDenyIdx < 0 || exploreAllowIdx < 0 || taskDenyIdx > exploreAllowIdx {
+		t.Errorf("task rule ordering broken: broad deny at %d, explore allow at %d", taskDenyIdx, exploreAllowIdx)
 	}
 
 	bash := fm.Permission.Bash
