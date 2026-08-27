@@ -4,3 +4,7 @@
 # Compiled binary
 /global-build
 /dist/
+
+# Leftover build/run artifacts emitted by freshness/runner helper scripts
+fresh.err
+fresh.out

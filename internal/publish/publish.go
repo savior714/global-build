@@ -18,7 +18,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"path"
 	"sort"
 	"strings"
 
@@ -55,8 +54,7 @@ const (
 	ExitError     = 40
 )
 
-// candidateRefPrefix is the exact candidate ref namespace.
-const candidateRefPrefix = "refs/build-candidates/"
+
 
 // Config is the injected publish configuration.
 type Config struct {
@@ -141,7 +139,7 @@ func Compute(ctx context.Context, cfg Config) Outcome {
 	o.Fields["RUN_ID"] = cfg.RunID
 	o.Fields["ADMITTED_BASE"] = cfg.AdmittedBase
 	o.Fields["CANDIDATE"] = cfg.Candidate
-	candRef := candidateRefPrefix + cfg.RunID
+	candRef := gitx.CandidateRefPrefix + cfg.RunID
 	o.Fields["CANDIDATE_REF"] = candRef
 
 	// --- preflight: local candidate validation (no network mutation) -------
@@ -369,37 +367,13 @@ func normalizeWatches(in []string) ([]string, error) {
 	}
 	out := make([]string, 0, len(in))
 	for _, s := range in {
-		n, err := normalizeWatchSurface(s)
+		n, err := watches.Normalize(s)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, n)
 	}
 	return out, nil
-}
-
-func normalizeWatchSurface(s string) (string, error) {
-	if s == "" {
-		return "", fmt.Errorf("empty watch surface")
-	}
-	if strings.HasPrefix(s, "/") {
-		return "", fmt.Errorf("absolute watch surface not allowed: %q", s)
-	}
-	if s != strings.TrimSpace(s) {
-		return "", fmt.Errorf("watch surface has surrounding whitespace: %q", s)
-	}
-	dirSurface := strings.HasSuffix(s, "/")
-	cleaned := path.Clean(s)
-	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
-		return "", fmt.Errorf("watch surface escapes repository root: %q", s)
-	}
-	if dirSurface {
-		return cleaned + "/", nil
-	}
-	if cleaned != s {
-		return "", fmt.Errorf("watch surface not a clean relative path: %q", s)
-	}
-	return cleaned, nil
 }
 
 // SortedJoin is a deterministic changed-path serialization (exported for tests).
