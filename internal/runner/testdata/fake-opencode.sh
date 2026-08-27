@@ -4,6 +4,7 @@
 # Behavior is selected via GB_FAKE_SCENARIO. Controlled NDJSON goes to stdout;
 # the task body received on stdin is copied to GB_FAKE_STDIN_COPY; every
 # invocation appends one line to GB_FAKE_CALLS so tests can count attempts.
+# Optional GB_FAKE_ARGS_LOG records the exact argv of each worker/finalizer call.
 #
 # Like real OpenCode, the fake accepts `--dir <path>` and performs its
 # repository-relative work (git lookups, mutations, commits, dirty state)
@@ -21,6 +22,9 @@ fi
 
 echo run >> "$GB_FAKE_CALLS"
 count=$(grep -c . "$GB_FAKE_CALLS")
+if [ -n "${GB_FAKE_ARGS_LOG:-}" ]; then
+  printf '%s\n' "$*" >> "$GB_FAKE_ARGS_LOG"
+fi
 if [ -n "${GB_FAKE_STDIN_COPY:-}" ] && [ "$count" -eq 1 ]; then
   cat > "$GB_FAKE_STDIN_COPY"
 else
@@ -28,16 +32,21 @@ else
 fi
 
 dir=''
+agent=''
+session=''
 prev=''
 for arg in "$@"; do
-  if [ "$prev" = '--dir' ]; then
-    dir=$arg
-    prev=''
-  elif [ "$arg" = '--dir' ]; then
-    prev='--dir'
-  else
-    prev=''
-  fi
+  case "$prev" in
+    --dir) dir=$arg; prev='' ;;
+    --agent) agent=$arg; prev='' ;;
+    --session) session=$arg; prev='' ;;
+    *)
+      case "$arg" in
+        --dir|--agent|--session) prev=$arg ;;
+        *) prev='' ;;
+      esac
+      ;;
+  esac
 done
 
 emit() { printf '%s\n' "$1"; }
@@ -59,7 +68,7 @@ scenario="${GB_FAKE_SCENARIO:-}"
 # Scenarios that touch the repository must run inside the disposable worktree
 # real OpenCode would have been pointed at via --dir.
 case "$scenario" in
-  complete|dirty_complete|outside_surface|continuable|identity_mismatch|transient_then_success)
+  complete|dirty_complete|outside_surface|continuable|identity_mismatch|transient_then_success|malformed_then_finalized|malformed_then_malformed|malformed_no_session)
     if [ -z "$dir" ]; then
       echo "fake opencode: scenario '$scenario' requires --dir <worktree>" >&2
       exit 3
@@ -111,6 +120,44 @@ case "$scenario" in
     emit "$text_progress"
     emit "$tool_use"
     emit '{"type":"text","timestamp":4,"sessionID":"ses_1","part":{"id":"p4","type":"text","text":"RESULT: BLOCKED\nBLOCKER: required dependency unavailable\nEVIDENCE: go mod download fails with network unreachable","time":{"start":3,"end":4}}}'
+    ;;
+
+  malformed_then_finalized)
+    if [ "$count" -eq 1 ]; then
+      emit "$step_start"
+      commit_candidate_in docs/notes.txt
+      emit "$tool_use"
+      emit '{"type":"text","timestamp":4,"sessionID":"ses_1","part":{"id":"p4","type":"text","text":"All PRIMARY PROOF criteria pass: candidate is ready.","time":{"start":3,"end":4}}}'
+      exit 0
+    fi
+    if [ "$agent" != 'global-build-finalizer' ] || [ "$session" != 'ses_1' ]; then
+      echo "fake opencode: finalizer must use exact agent/session, got agent=$agent session=$session" >&2
+      exit 4
+    fi
+    emit "$step_start"
+    emit '{"type":"text","timestamp":4,"sessionID":"ses_1","part":{"id":"p4","type":"text","text":"RESULT: COMPLETE\nPRIMARY_PROOF: PASS","time":{"start":3,"end":4}}}'
+    ;;
+
+  malformed_then_malformed)
+    if [ "$count" -eq 1 ]; then
+      emit "$step_start"
+      commit_candidate_in docs/notes.txt
+      emit "$tool_use"
+      emit '{"type":"text","timestamp":4,"sessionID":"ses_1","part":{"id":"p4","type":"text","text":"All PRIMARY PROOF criteria pass: candidate is ready.","time":{"start":3,"end":4}}}'
+      exit 0
+    fi
+    if [ "$agent" != 'global-build-finalizer' ] || [ "$session" != 'ses_1' ]; then
+      exit 4
+    fi
+    emit "$step_start"
+    emit '{"type":"text","timestamp":4,"sessionID":"ses_1","part":{"id":"p4","type":"text","text":"Still malformed prose.","time":{"start":3,"end":4}}}'
+    ;;
+
+  malformed_no_session)
+    emit '{"type":"step_start","timestamp":1,"sessionID":"","part":{"id":"p1","type":"step-start"}}'
+    commit_candidate_in docs/notes.txt
+    emit '{"type":"tool_use","timestamp":3,"sessionID":"","part":{"id":"p3","type":"tool","tool":"bash","state":{"status":"completed","input":{},"output":"ok"}}}'
+    emit '{"type":"text","timestamp":4,"sessionID":"","part":{"id":"p4","type":"text","text":"All PRIMARY PROOF criteria pass: candidate is ready.","time":{"start":3,"end":4}}}'
     ;;
 
   no_text)

@@ -532,7 +532,10 @@ const (
 //	<bin> run --format json --agent global-build-worker --dir <worktreeDir>
 //
 // with taskBody passed through child stdin. Stdout is consumed as NDJSON;
-// child stderr is forwarded to stderrOut for operational diagnostics.
+// child stderr is forwarded to stderrOut for operational diagnostics. If the
+// primary reaches a terminal semantic outcome but renders malformed BUILD
+// protocol text, Invoke may perform exactly one tool-less continuation of that
+// exact session to re-render the already-reached outcome.
 func Invoke(ctx context.Context, bin, worktreeDir, taskBody string, stderrOut io.Writer) (*Attempt, error) {
 	// Each BUILD invocation must grant the worker external_directory access to
 	// ONLY its exact current disposable worktree. We inject that as a run-specific
@@ -574,6 +577,8 @@ func Invoke(ctx context.Context, bin, worktreeDir, taskBody string, stderrOut io
 
 	tracker := NewTracker()
 	corrupt := false
+	sessionID := ""
+	sessionConflict := false
 
 	readDone := make(chan struct{})
 	go func() {
@@ -582,6 +587,13 @@ func Invoke(ctx context.Context, bin, worktreeDir, taskBody string, stderrOut io
 		scanner := newLargeScanner(stdout, &buf)
 		for scanner.Scan() {
 			line := scanner.Text()
+			if id, ok := sessionIDFromEventLine(line); ok {
+				if sessionID == "" {
+					sessionID = id
+				} else if sessionID != id {
+					sessionConflict = true
+				}
+			}
 			if err := tracker.Observe(line); err != nil {
 				corrupt = true // keep draining; fail closed later
 				fmt.Fprintf(stderrOut, "[global-build] malformed stdout line from opencode: %v\n", err)
@@ -610,5 +622,8 @@ func Invoke(ctx context.Context, bin, worktreeDir, taskBody string, stderrOut io
 			attempt.SpawnErr = startErr
 		}
 	}
-	return attempt, nil
+	if sessionConflict {
+		return attempt, nil
+	}
+	return maybeFinalizeMalformedTerminal(ctx, bin, worktreeDir, sessionID, attempt, stderrOut)
 }
