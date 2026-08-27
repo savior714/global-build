@@ -50,10 +50,15 @@ Current worker invariants:
 
 - primary agent
 - `steps: 50`
-- `webfetch`, `websearch`, `question`, `task`, and `doom_loop`: denied
+- `webfetch`, `websearch`, `question`, and `doom_loop`: denied
+- `task`: deny-by-default; only the built-in read-only `explore` subagent is admitted
+- delegation is bounded to at most three Explore calls per BUILD, using the minimum useful number and parallel dispatch only for genuinely independent investigation axes
+- delegated investigation must be read-only and non-overlapping; the primary remains the sole mutation owner and runs the final PRIMARY PROOF itself
 - unsafe Git publication/topology commands: denied
 - `external_directory`: denied globally and allowed only for the exact disposable worktree of the current run
 - worker never pushes or publishes
+
+The delegation policy is an orchestration optimization, not extra mutation authority. Direct reads remain preferred for isolated known-file questions. When delegation is appropriate, the worker should ask separate Explore agents for narrow evidence such as production-code ownership, tests/proof/fixtures, or existing patterns/regression surfaces, and must not duplicate the delegated investigation itself. `general`, `scout`, and other subagents remain outside the worker contract.
 
 ### OpenCode compatibility
 

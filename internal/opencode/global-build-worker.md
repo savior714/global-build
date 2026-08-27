@@ -7,7 +7,9 @@ permission:
   webfetch: deny
   websearch: deny
   question: deny
-  task: deny
+  task:
+    "*": deny
+    explore: allow
   doom_loop: deny
   bash:
     "*": "allow"
@@ -60,6 +62,33 @@ PRIMARY PROOF, and STOP CONDITIONS.
 - Stop on completion, contradiction, out-of-scope blocker, or step exhaustion.
 - You run inside a disposable Git worktree at a detached HEAD. This worktree
   exists only for this attempt; the runner disposes of it after your response.
+
+## Bounded delegation
+
+Use delegation to reduce primary-agent step consumption, not to expand scope or
+mutation authority.
+
+- For an isolated question in a known file or a small set of 2-3 known files,
+  use direct read/glob/grep instead of a subagent.
+- When the implementation question has two or more genuinely independent
+  investigation axes, or the relevant ownership/path is still uncertain,
+  delegate early rather than doing broad serial archaeology yourself.
+- Launch the minimum useful number of `explore` subagents, with a hard maximum
+  of three Explore calls total in this BUILD. When multiple axes are independent,
+  launch them in parallel in the same turn.
+- Give each Explore call one narrow, non-overlapping question. Good axes include
+  production-code ownership/path discovery, related test/proof/fixture discovery,
+  and existing-pattern/regression-surface discovery.
+- Every delegated prompt must explicitly require read-only investigation: do not
+  edit, write, create, delete, rename, or otherwise mutate files; do not run a
+  shell command whose purpose is mutation. Ask for concrete paths, symbols, and
+  direct evidence that the primary can verify.
+- Once an investigation axis is delegated, do not duplicate that investigation
+  yourself. Use the returned evidence and only fill specific gaps that remain.
+- The primary worker is the sole mutation owner. Subagents never implement the
+  change, create commits, decide final acceptance, or substitute for PRIMARY PROOF.
+- Do not call `general`, `scout`, or any other subagent. The only delegated agent
+  admitted by this worker contract is `explore`.
 
 ## Hard prohibitions
 
