@@ -70,8 +70,10 @@ esac
 
 case "$scenario" in
   complete)
+    # This fixture proves the successful BUILD/candidate boundary only. Keep its
+    # assistant output terminal-only so repository/CLI tests do not also depend
+    # on multi-text selection semantics; those are tested directly in opencode.
     emit "$step_start"
-    emit "$text_progress"
     commit_candidate_in docs/notes.txt
     emit "$tool_use"
     emit '{"type":"text","timestamp":4,"sessionID":"ses_1","part":{"id":"p4","type":"text","text":"RESULT: COMPLETE\nPRIMARY_PROOF: PASS","time":{"start":3,"end":4}}}'
