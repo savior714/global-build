@@ -33,11 +33,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"regexp"
 	"strings"
 
 	"go.yaml.in/yaml/v3"
+
+	"global-build/internal/watches"
 )
 
 // Section headers required in the body, exactly these five, no more, no less.
@@ -116,7 +117,7 @@ func Parse(input string) (*Envelope, error) {
 		return nil, errors.New("envelope: watch_surfaces must not be empty")
 	}
 	for _, s := range fm.WatchSurfaces {
-		norm, err := normalizeSurface(s)
+		norm, err := watches.Normalize(s)
 		if err != nil {
 			return nil, fmt.Errorf("envelope: watch_surfaces entry %q: %w", s, err)
 		}
@@ -130,33 +131,6 @@ func Parse(input string) (*Envelope, error) {
 	}
 	env.Body = body
 	return env, nil
-}
-
-// normalizeSurface accepts two deterministic surface forms:
-//   - exact path:            "docs/spec.md"
-//   - directory prefix:      "src/" (must end with '/')
-func normalizeSurface(s string) (string, error) {
-	if s == "" {
-		return "", errors.New("empty surface")
-	}
-	if strings.HasPrefix(s, "/") {
-		return "", errors.New("absolute paths are not allowed")
-	}
-	if s != strings.TrimSpace(s) {
-		return "", errors.New("leading/trailing whitespace")
-	}
-	dirSurface := strings.HasSuffix(s, "/")
-	cleaned := path.Clean(s)
-	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
-		return "", errors.New("escapes repository root")
-	}
-	if dirSurface {
-		return cleaned + "/", nil
-	}
-	if cleaned != s {
-		return "", errors.New("not a clean relative path (use e.g. 'src/' for directory surfaces)")
-	}
-	return cleaned, nil
 }
 
 // parseBody enforces exactly the five required sections: each present exactly

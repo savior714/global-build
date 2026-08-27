@@ -4,6 +4,8 @@
 package watches
 
 import (
+	"fmt"
+	"path"
 	"sort"
 	"strings"
 )
@@ -12,6 +14,40 @@ import (
 type Set struct {
 	exact    map[string]struct{}
 	prefixes []string // each ends with "/"
+}
+
+// Normalize validates and normalizes a single watch surface to the canonical
+// form used by every consumer (the runner envelope, the publisher, and the
+// freshness check):
+//
+//   - exact path:  "docs/spec.md"
+//   - directory prefix: "src/" (must end with '/')
+//
+// All other forms are rejected fail-closed. This is the single source of truth
+// for surface normalization; the duplicated helpers that used to live in
+// envelope/publish/freshness are gone.
+func Normalize(s string) (string, error) {
+	if s == "" {
+		return "", fmt.Errorf("empty watch surface")
+	}
+	if strings.HasPrefix(s, "/") {
+		return "", fmt.Errorf("absolute watch surface not allowed: %q", s)
+	}
+	if s != strings.TrimSpace(s) {
+		return "", fmt.Errorf("watch surface has surrounding whitespace: %q", s)
+	}
+	dirSurface := strings.HasSuffix(s, "/")
+	cleaned := path.Clean(s)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("watch surface escapes repository root: %q", s)
+	}
+	if dirSurface {
+		return cleaned + "/", nil
+	}
+	if cleaned != s {
+		return "", fmt.Errorf("watch surface not a clean relative path: %q", s)
+	}
+	return cleaned, nil
 }
 
 func New(surfaces []string) *Set {
