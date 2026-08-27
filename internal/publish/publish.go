@@ -54,8 +54,7 @@ const (
 	ExitError     = 40
 )
 
-// candidateRefPrefix is the exact candidate ref namespace.
-const candidateRefPrefix = "refs/build-candidates/"
+
 
 // Config is the injected publish configuration.
 type Config struct {
@@ -140,7 +139,7 @@ func Compute(ctx context.Context, cfg Config) Outcome {
 	o.Fields["RUN_ID"] = cfg.RunID
 	o.Fields["ADMITTED_BASE"] = cfg.AdmittedBase
 	o.Fields["CANDIDATE"] = cfg.Candidate
-	candRef := candidateRefPrefix + cfg.RunID
+	candRef := gitx.CandidateRefPrefix + cfg.RunID
 	o.Fields["CANDIDATE_REF"] = candRef
 
 	// --- preflight: local candidate validation (no network mutation) -------

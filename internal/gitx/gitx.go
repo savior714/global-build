@@ -15,6 +15,12 @@ import (
 	"strings"
 )
 
+// CandidateRefPrefix is the exact candidate ref namespace shared by the runner
+// (which creates the candidate ref) and the publisher (which verifies and
+// deletes it). Centralizing it here keeps the contract in one place so the two
+// sides can never drift.
+const CandidateRefPrefix = "refs/build-candidates/"
+
 // WorktreeEntry is one record of `git worktree list --porcelain -z`
 // (NUL-safe form).
 type WorktreeEntry struct {
@@ -145,6 +151,14 @@ func WorktreeListPorcelainZ(ctx context.Context, dir string) ([]WorktreeEntry, e
 	if err != nil {
 		return nil, err
 	}
+	return parseWorktreePorcelainZ(raw)
+}
+
+// parseWorktreePorcelainZ decodes the NUL-separated porcelain token stream into
+// entries. Extracted from WorktreeListPorcelainZ so abnormal token streams
+// (peeled lines, empty entries, missing lock reasons) can be unit-tested
+// without a live work tree.
+func parseWorktreePorcelainZ(raw string) ([]WorktreeEntry, error) {
 	tokens := strings.Split(raw, "\x00")
 	var entries []WorktreeEntry
 	cur := WorktreeEntry{}
@@ -418,6 +432,15 @@ func ReadRemoteBranchOID(ctx context.Context, repoDir, remote, branch string) (s
 		return "", &RemoteRefError{Kind: RemoteRefGitFailure, Msg: fmt.Sprintf("git ls-remote exited %d for %s %s", code, remote, ref)}
 	}
 
+	return parseLsRemote(out, ref, remote)
+}
+
+// parseLsRemote decodes `git ls-remote` output into the fail-closed result for
+// a single branch ref. Peeled "<oid>\t<ref>^{}" lines are ignored (they never
+// match the exact branch ref), non-OID and malformed lines are rejected, and
+// exactly one matching OID is required. Extracted from ReadRemoteBranchOID so
+// the collection/peeled/ambiguous logic can be unit-tested without a remote.
+func parseLsRemote(out, ref, remote string) (string, *RemoteRefError) {
 	var oids []string
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
@@ -439,6 +462,13 @@ func ReadRemoteBranchOID(ctx context.Context, repoDir, remote, branch string) (s
 			oids = append(oids, oid)
 		}
 	}
+	return classifyLsRemote(oids, remote, ref)
+}
+
+// classifyLsRemote turns the collected matching OIDs into the fail-closed
+// result: exactly one match is required. Extracted from ReadRemoteBranchOID so
+// ambiguous / no-match / peeled-line outcomes can be unit-tested directly.
+func classifyLsRemote(oids []string, remote, ref string) (string, *RemoteRefError) {
 	if len(oids) == 0 {
 		return "", &RemoteRefError{Kind: RemoteRefNoSuch, Msg: fmt.Sprintf("remote %s has no ref %s", remote, ref)}
 	}
