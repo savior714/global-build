@@ -194,6 +194,8 @@ func invokeFinalizer(ctx context.Context, bin, worktreeDir, sessionID string, st
 
 	tracker := NewTracker()
 	corrupt := false
+	synced := newSyncedWriter(stderrOut)
+
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)
@@ -202,7 +204,7 @@ func invokeFinalizer(ctx context.Context, bin, worktreeDir, sessionID string, st
 		for scanner.Scan() {
 			if err := tracker.Observe(scanner.Text()); err != nil {
 				corrupt = true
-				fmt.Fprintf(stderrOut, "[global-build] malformed stdout line from protocol finalizer: %v\n", err)
+				fmt.Fprintf(synced, "[global-build] malformed stdout line from protocol finalizer: %v\n", err)
 			}
 		}
 	}()
@@ -210,7 +212,7 @@ func invokeFinalizer(ctx context.Context, bin, worktreeDir, sessionID string, st
 	errCopyDone := make(chan struct{})
 	go func() {
 		defer close(errCopyDone)
-		_, _ = io.Copy(stderrOut, stderr)
+		_, _ = io.Copy(synced, stderr)
 	}()
 
 	waitErr := cmd.Wait()

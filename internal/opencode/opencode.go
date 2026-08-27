@@ -527,6 +527,25 @@ const (
 	EnvBinVar      = "GLOBAL_BUILD_OPENCODE_BIN"
 )
 
+// syncedWriter wraps an io.Writer with a mutex so concurrent writers are safe.
+// It is the single concurrency owner for diagnostic output during an OpenCode
+// subprocess invocation: one goroutine feeds parse diagnostics while another
+// drains child stderr. Callers must not write to the underlying writer directly.
+type syncedWriter struct {
+	mu  sync.Mutex
+	w   io.Writer
+}
+
+func newSyncedWriter(w io.Writer) *syncedWriter {
+	return &syncedWriter{w: w}
+}
+
+func (s *syncedWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
 // Invoke runs one non-interactive attempt:
 //
 //	<bin> run --format json --agent global-build-worker --dir <worktreeDir>
@@ -580,6 +599,8 @@ func Invoke(ctx context.Context, bin, worktreeDir, taskBody string, stderrOut io
 	sessionID := ""
 	sessionConflict := false
 
+	synced := newSyncedWriter(stderrOut)
+
 	readDone := make(chan struct{})
 	go func() {
 		defer close(readDone)
@@ -596,7 +617,7 @@ func Invoke(ctx context.Context, bin, worktreeDir, taskBody string, stderrOut io
 			}
 			if err := tracker.Observe(line); err != nil {
 				corrupt = true // keep draining; fail closed later
-				fmt.Fprintf(stderrOut, "[global-build] malformed stdout line from opencode: %v\n", err)
+				fmt.Fprintf(synced, "[global-build] malformed stdout line from opencode: %v\n", err)
 			}
 		}
 	}()
@@ -604,7 +625,7 @@ func Invoke(ctx context.Context, bin, worktreeDir, taskBody string, stderrOut io
 	errCopyDone := make(chan struct{})
 	go func() {
 		defer close(errCopyDone)
-		_, _ = io.Copy(stderrOut, stderr)
+		_, _ = io.Copy(synced, stderr)
 	}()
 
 	startErr := cmd.Wait()
@@ -625,5 +646,5 @@ func Invoke(ctx context.Context, bin, worktreeDir, taskBody string, stderrOut io
 	if sessionConflict {
 		return attempt, nil
 	}
-	return maybeFinalizeMalformedTerminal(ctx, bin, worktreeDir, sessionID, attempt, stderrOut)
+	return maybeFinalizeMalformedTerminal(ctx, bin, worktreeDir, sessionID, attempt, synced)
 }
