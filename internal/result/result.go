@@ -36,13 +36,15 @@ var requiredFields = map[Kind][]string{
 type Result struct {
 	Kind   Kind
 	Keys   []string          // field order as written
-	Fields map[string]string // trimmed values; multi-line values contain \n
+	Fields map[string]string // trimmed values; explicit continuation lines contain \n
 }
 
 // Parse extracts and validates the final assistant text. The first meaningful
-// line must be "RESULT: <KIND>"; every other line must belong to the exact
-// schema of that kind (unknown or duplicated fields are rejected). Continuation
-// lines that do not parse as KEY: VALUE are appended to the previous value.
+// line must be "RESULT: <KIND>"; every other non-blank line must be either an
+// exact schema field or an explicit continuation line indented by two spaces.
+// Bare prose is never inferred to belong to the previous field. This preserves
+// multi-line protocol values without allowing trailing prose to hide inside
+// CONTINUABLE/BLOCKED fields.
 func Parse(text string) (*Result, error) {
 	lines := strings.Split(text, "\n")
 	// Trim blank leading/trailing lines.
@@ -86,10 +88,22 @@ func Parse(text string) (*Result, error) {
 			lastKey = key
 			continue
 		}
+
+		// Multi-line values are supported only through an explicit two-space
+		// continuation. This matches the runner's deterministic stdout rendering
+		// and prevents ordinary prose after EVIDENCE/WORKTREE_STATE from being
+		// silently accepted as part of the previous field.
 		if lastKey == "" {
 			return nil, fmt.Errorf("result: stray line before any field: %q", line)
 		}
-		r.Fields[lastKey] += "\n" + strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "  ") {
+			return nil, fmt.Errorf("result: stray non-protocol line %q", line)
+		}
+		continuation := strings.TrimSpace(line)
+		if continuation == "" {
+			return nil, fmt.Errorf("result: blank continuation line for field %q", lastKey)
+		}
+		r.Fields[lastKey] += "\n" + continuation
 	}
 
 	for _, req := range requiredFields[kind] {

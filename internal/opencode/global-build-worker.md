@@ -8,6 +8,7 @@ permission:
   websearch: deny
   question: deny
   task: deny
+  doom_loop: deny
   bash:
     "*": "allow"
     "git push*": "deny"

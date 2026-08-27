@@ -86,6 +86,10 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "global-build: %v\n", err)
 		return runner.ExitRunnerError
 	}
+	if _, err := opencode.CheckCompatibility(context.Background(), bin); err != nil {
+		fmt.Fprintf(os.Stderr, "global-build: %v\n", err)
+		return runner.ExitRunnerError
+	}
 
 	cfg := runner.Config{
 		BinPath:   bin,

@@ -11,6 +11,14 @@
 # CWD because those fixture files live outside the disposable worktree.
 set -u
 
+# BUILD CLI compatibility preflight runs `<bin> --version` before execution.
+# Version probes are not worker attempts and therefore must not touch the
+# attempt-count/stdin fixtures.
+if [ "${1:-}" = '--version' ]; then
+  printf '%s\n' "${GB_FAKE_VERSION:-1.18.23}"
+  exit 0
+fi
+
 echo run >> "$GB_FAKE_CALLS"
 count=$(grep -c . "$GB_FAKE_CALLS")
 if [ -n "${GB_FAKE_STDIN_COPY:-}" ] && [ "$count" -eq 1 ]; then
