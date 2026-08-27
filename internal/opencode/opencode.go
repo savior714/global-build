@@ -47,6 +47,10 @@ const EnvConfigContent = "OPENCODE_CONFIG_CONTENT"
 // AgentName is the dedicated global agent id used for every BUILD attempt.
 const AgentName = "global-build-worker"
 
+// ExploreAgentName is the built-in read-only discovery subagent admitted by the
+// canonical worker contract.
+const ExploreAgentName = "explore"
+
 // Part mirrors the subset of message-part fields the runner relies on.
 type Part struct {
 	ID    string `json:"id"`
@@ -293,6 +297,40 @@ func CanonicalWorkerBody() (string, error) {
 	return body, nil
 }
 
+// applyExploreReadOnlyOverride owns the Explore tool surface for this single
+// global-build invocation. OpenCode 1.18.23's built-in Explore agent otherwise
+// allows bash, webfetch, and websearch, and child sessions use the subagent's own
+// permissions rather than inheriting the parent's narrower intent. Preserve all
+// non-permission Explore metadata, but replace its permission block with a
+// deny-by-default allow-list containing only dedicated local read/search tools.
+func applyExploreReadOnlyOverride(agents map[string]json.RawMessage) error {
+	explore := map[string]json.RawMessage{}
+	if raw, ok := agents[ExploreAgentName]; ok {
+		if err := json.Unmarshal(raw, &explore); err != nil {
+			return fmt.Errorf("existing %s agent block is not a valid object: %w", ExploreAgentName, err)
+		}
+	}
+
+	permissionRaw, err := json.Marshal(map[string]string{
+		"*":    "deny",
+		"glob": "allow",
+		"grep": "allow",
+		"list": "allow",
+		"read": "allow",
+	})
+	if err != nil {
+		return fmt.Errorf("cannot encode %s permission override: %w", ExploreAgentName, err)
+	}
+	explore["permission"] = permissionRaw
+
+	exploreRaw, err := json.Marshal(explore)
+	if err != nil {
+		return fmt.Errorf("cannot encode %s override: %w", ExploreAgentName, err)
+	}
+	agents[ExploreAgentName] = exploreRaw
+	return nil
+}
+
 // BuildInlineConfig returns the merged OPENCODE_CONFIG_CONTENT JSON string for
 // a single run. It grants agent global-build-worker external_directory access
 // ONLY to the exact canonical worktree, while denying everything else, WITHOUT
@@ -426,6 +464,10 @@ func BuildInlineConfig(existingContent, worktreeDir string) (string, error) {
 		return "", fmt.Errorf("cannot encode %s override: %w", AgentName, err)
 	}
 	agents[AgentName] = workerRaw
+
+	if err := applyExploreReadOnlyOverride(agents); err != nil {
+		return "", err
+	}
 
 	agentsRaw, err := json.Marshal(agents)
 	if err != nil {
