@@ -33,6 +33,36 @@ func TestParseVersionRejectsUnparseableOutput(t *testing.T) {
 	}
 }
 
+func TestCheckCompatibilityAdmitsOnly1_18(t *testing.T) {
+	cases := []struct {
+		input   string
+		wantErr bool
+	}{
+		{"opencode 1.18.23\n", false},
+		{"opencode 1.18.0\n", false},
+		{"opencode 1.18.99\n", false},
+		{"OpenCode v1.17.5\n", true},
+		{"OpenCode 1.17.0\n", true},
+		{"opencode 1.19.0\n", true},
+		{"opencode 1.19.1\n", true},
+		{"OpenCode 2.0.0\n", true},
+		{"opencode 2.1.3\n", true},
+		{"OpenCode 0.99.0\n", true},
+	}
+	for _, tc := range cases {
+		// Test the admission decision by calling parseVersion and simulating
+		// the check that CheckCompatibility performs.
+		version, major, minor, err := parseVersion(tc.input)
+		if err != nil {
+			t.Fatalf("parseVersion(%q): %v", tc.input, err)
+		}
+		admitted := major == SupportedMajor && minor == AdmittedMinor
+		if admitted != !tc.wantErr {
+			t.Errorf("version %s (major=%d minor=%d): admitted=%v, wantErr=%v", version, major, minor, admitted, tc.wantErr)
+		}
+	}
+}
+
 // TestCanonicalDoomLoopDenyOverridesStaleAllow proves that noninteractive
 // repeated-call handling is repository-owned rather than inherited from a
 // permissive or interactive external OpenCode config.

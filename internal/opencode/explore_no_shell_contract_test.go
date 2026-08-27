@@ -16,6 +16,7 @@ func TestCanonicalWorkerDelegatesExploreWithoutShell(t *testing.T) {
 		"Do not use\n  `bash` or any shell command, even for read-only discovery",
 		"do not duplicate that investigation",
 		"primary worker is the sole mutation owner",
+		"global-build-explore",
 	} {
 		if !strings.Contains(body, required) {
 			t.Errorf("canonical worker prompt missing Explore no-shell contract fragment %q", required)

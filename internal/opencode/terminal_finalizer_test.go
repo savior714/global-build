@@ -66,7 +66,7 @@ func TestBuildFinalizerInlineConfigIsToollessAndPreservesWorkerModel(t *testing.
 		t.Error("finalizer prompt missing")
 	}
 
-	// The normal Explore restriction must remain present in the finalizer config.
-	explorePerm, _ := explorePermission(t, merged)
+	// The canonical global-build-explore restriction must remain present in the finalizer config.
+	explorePerm, _ := explorePermission(t, merged, GlobalBuildExploreAgentName)
 	assertCanonicalExplorePermission(t, explorePerm)
 }

@@ -13,9 +13,10 @@ import (
 const (
 	// The current global-build runtime contract is proven against the OpenCode
 	// 1.x legacy agent/permission generation. 1.18.23 is the latest explicitly
-	// accepted runtime proof; 1.18 is therefore the minimum admitted minor line.
+	// accepted runtime proof; only the 1.18 minor line is admitted. Pre-1.18
+	// and 1.19+ require a separate compatibility and runtime acceptance pass.
 	SupportedMajor    = 1
-	MinSupportedMinor = 18
+	AdmittedMinor     = 18
 	versionProbeLimit = 5 * time.Second
 )
 
@@ -43,8 +44,8 @@ func CheckCompatibility(ctx context.Context, bin string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if major != SupportedMajor || minor < MinSupportedMinor {
-		return "", fmt.Errorf("unsupported OpenCode version %s: global-build is accepted only for OpenCode %d.x at >= %d.%d; a different configuration generation must be independently accepted first", version, SupportedMajor, SupportedMajor, MinSupportedMinor)
+	if major != SupportedMajor || minor != AdmittedMinor {
+		return "", fmt.Errorf("unsupported OpenCode version %s: global-build is accepted only for OpenCode %d.%d.x; a different configuration generation must be independently accepted first", version, SupportedMajor, AdmittedMinor)
 	}
 	return version, nil
 }

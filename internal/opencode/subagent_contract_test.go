@@ -47,11 +47,11 @@ func TestCanonicalWorkerAllowsOnlyExploreSubagent(t *testing.T) {
 	if got := task["*"]; got != "deny" {
 		t.Errorf("task[*] = %q, want deny", got)
 	}
-	if got := task["explore"]; got != "allow" {
-		t.Errorf("task[explore] = %q, want allow", got)
+	if got := task["global-build-explore"]; got != "allow" {
+		t.Errorf("task[global-build-explore] = %q, want allow", got)
 	}
 	if len(task) != 2 {
-		t.Errorf("task permission must admit only explore; got %v", task)
+		t.Errorf("task permission must admit only global-build-explore; got %v", task)
 	}
 	for _, forbidden := range []string{"general", "scout", "build", "plan"} {
 		if got, exists := task[forbidden]; exists && got != "deny" {
@@ -60,7 +60,7 @@ func TestCanonicalWorkerAllowsOnlyExploreSubagent(t *testing.T) {
 	}
 
 	for _, required := range []string{
-		"hard maximum\n  of three Explore calls total in this BUILD",
+		"hard maximum of three Explore calls total in this BUILD",
 		"launch them in parallel in the same turn",
 		"do not duplicate that investigation",
 		"primary worker is the sole mutation owner",
@@ -105,7 +105,7 @@ func TestCanonicalTaskAllowListOverridesStaleBroadTaskMap(t *testing.T) {
 	if err := json.Unmarshal(root.Agent[AgentName].Permission["task"], &task); err != nil {
 		t.Fatalf("canonical task permission is not a map: %v", err)
 	}
-	want := map[string]string{"*": "deny", "explore": "allow"}
+	want := map[string]string{"*": "deny", "global-build-explore": "allow"}
 	if len(task) != len(want) {
 		t.Fatalf("canonical task permission = %v, want %v", task, want)
 	}

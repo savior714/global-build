@@ -9,35 +9,43 @@ permission:
   question: deny
   task:
     "*": deny
-    explore: allow
+    global-build-explore: allow
   doom_loop: deny
   bash:
-    "*": "allow"
+    "*": "deny"
+    # Read-only inspection commands needed for investigation and verification.
+    "git status*": "allow"
+    "git diff*": "allow"
+    "git log*": "allow"
+    "git show*": "allow"
+    "git rev-parse*": "allow"
+    "git cat-file*": "allow"
+    "git describe*": "allow"
+    "git for-each-ref*": "allow"
+    "git ls-files*": "allow"
+    "git check-attr*": "allow"
+    # Staging and commit operations needed to produce the candidate.
+    "git add*": "allow"
+    "git commit*": "allow"
+    "git restore*": "allow"
+    "git checkout --*": "allow"
+    # Topology/ref/remote operations that could alter history or publish remain denied.
+    "git merge*": "deny"
+    "git rebase*": "deny"
+    "git cherry-pick*": "deny"
+    "git fetch*": "deny"
+    "git pull*": "deny"
     "git push*": "deny"
-    "git remote add*": "deny"
-    "git remote remove*": "deny"
-    "git remote rename*": "deny"
-    "git remote set-url*": "deny"
-    "git remote set-branches*": "deny"
-    "git remote set-head*": "deny"
-    "git remote prune*": "deny"
-    "git reset --hard*": "deny"
-    "git clean*": "deny"
-    "git worktree add*": "deny"
-    "git worktree move*": "deny"
-    "git worktree remove*": "deny"
-    "git worktree prune*": "deny"
-    "git worktree repair*": "deny"
-    "git worktree lock*": "deny"
-    "git worktree unlock*": "deny"
-    "git branch -f *": "deny"
-    "git branch --force*": "deny"
-    "git branch -D*": "deny"
-    "git tag -f *": "deny"
+    "git branch*": "deny"
+    "git tag*": "deny"
     "git update-ref*": "deny"
+    "git reset*": "deny"
+    "git stash*": "deny"
+    "git worktree*": "deny"
+    "git clean*": "deny"
     "git gc*": "deny"
     "git prune*": "deny"
-    "git reflog expire*": "deny"
+    "git reflog*": "deny"
     "git filter-branch*": "deny"
     "git replace*": "deny"
     "sudo*": "deny"
@@ -73,9 +81,9 @@ mutation authority.
 - When the implementation question has two or more genuinely independent
   investigation axes, or the relevant ownership/path is still uncertain,
   delegate early rather than doing broad serial archaeology yourself.
-- Launch the minimum useful number of `explore` subagents, with a hard maximum
-  of three Explore calls total in this BUILD. When multiple axes are independent,
-  launch them in parallel in the same turn.
+- Launch the minimum useful number of `global-build-explore` subagents, with a
+  hard maximum of three Explore calls total in this BUILD. When multiple axes
+  are independent, launch them in parallel in the same turn.
 - Give each Explore call one narrow, non-overlapping question. Good axes include
   production-code ownership/path discovery, related test/proof/fixture discovery,
   and existing-pattern/regression-surface discovery.
@@ -88,8 +96,8 @@ mutation authority.
   yourself. Use the returned evidence and only fill specific gaps that remain.
 - The primary worker is the sole mutation owner. Subagents never implement the
   change, create commits, decide final acceptance, or substitute for PRIMARY PROOF.
-- Do not call `general`, `scout`, or any other subagent. The only delegated agent
-  admitted by this worker contract is `explore`.
+- Do not call `general`, `scout`, `build`, `plan`, or any other subagent. The
+  only delegated agent admitted by this worker contract is `global-build-explore`.
 
 ## Hard prohibitions
 

@@ -153,39 +153,58 @@ func TestAgentContractSmoke(t *testing.T) {
 	if task["*"] != "deny" {
 		t.Errorf(`task["*"] = %q, want "deny"`, task["*"])
 	}
-	if task["explore"] != "allow" {
-		t.Errorf(`task["explore"] = %q, want "allow"`, task["explore"])
+	if task["global-build-explore"] != "allow" {
+		t.Errorf(`task["global-build-explore"] = %q, want "allow"`, task["global-build-explore"])
 	}
 	if len(task) != 2 {
-		t.Errorf("task permission must admit only explore; got %v", task)
+		t.Errorf("task permission must admit only global-build-explore; got %v", task)
 	}
 
-	// Ordered task rules: broad deny FIRST, narrow explore allow LAST
+	// Ordered task rules: broad deny FIRST, narrow global-build-explore allow LAST
 	// (OpenCode permission matching is last-match-wins).
 	taskDenyIdx := strings.Index(frontmatterText, `"*": deny`)
-	exploreAllowIdx := strings.Index(frontmatterText, `explore: allow`)
+	exploreAllowIdx := strings.Index(frontmatterText, `global-build-explore: allow`)
 	if taskDenyIdx < 0 || exploreAllowIdx < 0 || taskDenyIdx > exploreAllowIdx {
-		t.Errorf("task rule ordering broken: broad deny at %d, explore allow at %d", taskDenyIdx, exploreAllowIdx)
+		t.Errorf("task rule ordering broken: broad deny at %d, global-build-explore allow at %d", taskDenyIdx, exploreAllowIdx)
 	}
 
 	bash := fm.Permission.Bash
-	if bash["*"] != "allow" {
-		t.Errorf(`bash["*"] = %q, want "allow" for cross-repository build capability`, bash["*"])
+	if bash["*"] != "deny" {
+		t.Errorf(`bash["*"] = %q, want "deny" for default-deny Git authority`, bash["*"])
 	}
+	// Safe read/commit operations must remain allowed.
 	for _, rule := range []string{
-		"git push*", "git reset --hard*", "git clean*", "git worktree prune*",
-		"git worktree remove*", "git update-ref*", "sudo*",
+		"git status*", "git diff*", "git log*", "git rev-parse*",
+		"git add*", "git commit*", "git restore*",
+	} {
+		if bash[rule] != "allow" {
+			t.Errorf(`bash[%q] = %q, want allow`, rule, bash[rule])
+		}
+	}
+	// Dangerous topology/ref/remote operations must remain denied.
+	for _, rule := range []string{
+		"git merge*", "git rebase*", "git cherry-pick*", "git fetch*",
+		"git pull*", "git push*", "git branch*", "git tag*",
+		"git reset*", "git stash*", "git worktree*", "git clean*",
+		"git gc*", "git prune*", "git reflog*", "sudo*",
 	} {
 		if bash[rule] != "deny" {
 			t.Errorf(`bash[%q] = %q, want deny`, rule, bash[rule])
 		}
 	}
 
-	// Ordered rules: broad allow FIRST, narrow denies LAST (last-match-wins).
-	broadIdx := strings.Index(frontmatterText, `"*": "allow"`)
+	// Ordered rules: broad deny FIRST, narrow allows LAST (last-match-wins).
+	broadIdx := strings.Index(frontmatterText, `"*": "deny"`)
+	statusAllowIdx := strings.Index(frontmatterText, `"git status*": "allow"`)
 	pushDenyIdx := strings.Index(frontmatterText, `"git push*": "deny"`)
-	if broadIdx < 0 || pushDenyIdx < 0 || broadIdx > pushDenyIdx {
-		t.Errorf("bash rule ordering broken: broad allow at %d, git push deny at %d", broadIdx, pushDenyIdx)
+	if broadIdx < 0 || statusAllowIdx < 0 || pushDenyIdx < 0 {
+		t.Errorf("bash rule ordering incomplete: broad deny at %d, git status allow at %d, git push deny at %d", broadIdx, statusAllowIdx, pushDenyIdx)
+	}
+	if broadIdx > statusAllowIdx {
+		t.Errorf("bash rule ordering broken: broad deny at %d, git status allow at %d", broadIdx, statusAllowIdx)
+	}
+	if statusAllowIdx > pushDenyIdx {
+		t.Errorf("bash rule ordering broken: git status allow at %d, git push deny at %d", statusAllowIdx, pushDenyIdx)
 	}
 
 	// Publication prohibition and exact protocol blocks must be present.

@@ -374,7 +374,7 @@ func executeAttempts(ctx context.Context, cfg Config, rec *records, env *envelop
 	}
 
 	for attempt := 1; ; attempt++ {
-		trk, corrupt, spawnErr, timeoutKind := invokeWithWatchdog(ctx, cfg, rec, env.Body, logger)
+		att, corrupt, spawnErr, timeoutKind := invokeWithWatchdog(ctx, cfg, rec, env.Body, logger)
 
 		if spawnErr != nil {
 			if cerr := safeCleanup(ctx, rec, "", logger); cerr != nil {
@@ -396,6 +396,7 @@ func executeAttempts(ctx context.Context, cfg Config, rec *records, env *envelop
 			return malformed("structured NDJSON stream contained invalid JSON")
 		}
 
+		trk := att.Tracker
 		text, haveText := trk.TerminalText()
 		if !haveText {
 			if attempt < maxAttempts && retryEligible(trk) {
@@ -453,7 +454,7 @@ func retryEligible(trk *opencode.Tracker) bool {
 // invokeWithWatchdog runs one child invocation under the wall-clock and
 // progress watchdogs. It returns the tracker, whether the stream was corrupt,
 // any spawn failure, and a non-empty watchdog reason when the attempt timed out.
-func invokeWithWatchdog(ctx context.Context, cfg Config, rec *records, taskBody string, logger *log.Logger) (trk *opencode.Tracker, corrupt bool, spawnErr error, timeoutKind string) {
+func invokeWithWatchdog(ctx context.Context, cfg Config, rec *records, taskBody string, logger *log.Logger) (att *opencode.Attempt, corrupt bool, spawnErr error, timeoutKind string) {
 	attemptCtx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 
@@ -468,14 +469,15 @@ func invokeWithWatchdog(ctx context.Context, cfg Config, rec *records, taskBody 
 
 	start := time.Now()
 	var invokeErr error
-	var mu sync.Mutex // guards liveTracker swaps between the two goroutines
+	var mu sync.Mutex // guards liveTracker and attempt between the two goroutines
 	liveTracker := opencode.NewTracker()
+	var invokeAttempt *opencode.Attempt
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		logger.Printf("invoking opencode: %s run --format json --agent %s --dir %s", bin, opencode.AgentName, rec.worktree)
-		att, err := opencode.Invoke(attemptCtx, bin, rec.worktree, taskBody, logger.Writer())
+		att, err := opencode.InvokeWithTracker(attemptCtx, bin, rec.worktree, taskBody, liveTracker, logger.Writer())
 		if err != nil || att == nil {
 			mu.Lock()
 			invokeErr = err
@@ -484,8 +486,10 @@ func invokeWithWatchdog(ctx context.Context, cfg Config, rec *records, taskBody 
 		}
 		corrupt = att.StreamCorrupt
 		mu.Lock()
-		liveTracker = att.Tracker
+		invokeAttempt = att
 		mu.Unlock()
+		// liveTracker is the same instance passed into InvokeWithTracker; it has
+		// been receiving events in real-time so the watchdog observes live progress.
 	}()
 
 	watchDone := make(chan string, 1)
@@ -518,17 +522,17 @@ func invokeWithWatchdog(ctx context.Context, cfg Config, rec *records, taskBody 
 
 	<-done
 	kind := <-watchDone
-	if kind != "" {
-		return liveTracker, corrupt, nil, kind
-	}
 	mu.Lock()
 	err := invokeErr
-	trkFinal := liveTracker
+	attemptFinal := invokeAttempt
 	mu.Unlock()
-	if err != nil {
-		return trkFinal, corrupt, err, ""
+	if kind != "" {
+		return attemptFinal, corrupt, nil, kind
 	}
-	return trkFinal, corrupt, nil, ""
+	if err != nil {
+		return attemptFinal, corrupt, err, ""
+	}
+	return attemptFinal, corrupt, nil, ""
 }
 
 func minDuration(a, b time.Duration) time.Duration {
@@ -590,6 +594,21 @@ func handleComplete(ctx context.Context, rec *records, surfaces []string, out *o
 	}
 	if !ancestor {
 		return failCV("admitted base %s is not an ancestor of candidate %s", rec.admittedOID, headOID)
+	}
+	// Require exactly one non-merge commit in the admitted_base..candidate range.
+	commitCount, err := gitx.RevListCount(ctx, rec.repoRoot, rec.admittedOID, headOID)
+	if err != nil {
+		return failCV("commit count check failed: %v", err)
+	}
+	if commitCount != 1 {
+		return failCV("candidate range contains %d commits; exactly one is required", commitCount)
+	}
+	mergeCount, err := gitx.MergeCountInRange(ctx, rec.repoRoot, rec.admittedOID, headOID)
+	if err != nil {
+		return failCV("merge count check failed: %v", err)
+	}
+	if mergeCount != 0 {
+		return failCV("candidate range contains %d merge commits; zero merges are required", mergeCount)
 	}
 	clean, raw, err := gitx.StatusClean(ctx, rec.worktree)
 	if err != nil {

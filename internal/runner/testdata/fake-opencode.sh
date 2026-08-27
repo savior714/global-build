@@ -214,6 +214,49 @@ case "$scenario" in
     exec sleep 120
     ;;
 
+  progress_then_stall)
+    # Emits periodic progress events for a while, then stalls past the
+    # ProgressWindow without any further meaningful events. The watchdog must
+    # fire on the stall, not on process start jitter.
+    emit "$step_start"
+    for i in 1 2 3; do
+      printf '{"type":"text","timestamp":%d,"sessionID":"ses_1","part":{"id":"p%d","type":"text","text":"working...","time":{"start":%d,"end":%d}}}\n' "$((i*10))" "$i" "$(( (i-1)*10 ))" "$((i*10))"
+      sleep 0.2
+    done
+    # Now stall: no more progress events for well past any reasonable window.
+    sleep 5
+    emit '{"type":"text","timestamp":99,"sessionID":"ses_1","part":{"id":"p99","type":"text","text":"RESULT: COMPLETE\nPRIMARY_PROOF: PASS","time":{"start":98,"end":99}}}'
+    ;;
+
+  two_commits_complete)
+    # Creates TWO commits in the worktree then returns COMPLETE. The runner must
+    # reject this because exactly one commit is required.
+    emit "$step_start"
+    emit "$text_progress"
+    printf 'first change\n' >> docs/notes.txt
+    git add -A >/dev/null 2>&1
+    git commit -qm "first change" >/dev/null 2>&1
+    printf 'second change\n' >> docs/notes.txt
+    git add -A >/dev/null 2>&1
+    git commit -qm "second change" >/dev/null 2>&1
+    emit "$tool_use"
+    emit '{"type":"text","timestamp":4,"sessionID":"ses_1","part":{"id":"p4","type":"text","text":"RESULT: COMPLETE\nPRIMARY_PROOF: PASS","time":{"start":3,"end":4}}}'
+    ;;
+
+  sustained_progress_no_kill)
+    # Emits meaningful progress events continuously for longer than any test
+    # ProgressWindow would allow, proving the watchdog clock follows the latest
+    # event rather than process start time. Must NOT be killed.
+    emit "$step_start"
+    for i in $(seq 1 30); do
+      printf '{"type":"text","timestamp":%d,"sessionID":"ses_1","part":{"id":"p%d","type":"text","text":"still working...","time":{"start":%d,"end":%d}}}\n' "$((i*3))" "$i" "$(((i-1)*3))" "$((i*3))"
+      sleep 0.15
+    done
+    commit_candidate_in docs/notes.txt
+    emit "$tool_use"
+    emit '{"type":"text","timestamp":99,"sessionID":"ses_1","part":{"id":"p99","type":"text","text":"RESULT: COMPLETE\nPRIMARY_PROOF: PASS","time":{"start":98,"end":99}}}'
+    ;;
+
   identity_mismatch)
     emit "$step_start"
     emit "$text_progress"

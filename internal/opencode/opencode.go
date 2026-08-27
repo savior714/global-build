@@ -31,11 +31,21 @@ import (
 //go:embed global-build-worker.md
 var canonicalWorkerSource []byte
 
+//go:embed global-build-explore.md
+var canonicalExploreSource []byte
+
 // EmbeddedWorkerSource returns the raw bytes of the repo-owned canonical worker
 // definition. Exported only so cross-package tests can inspect it without
 // reaching for the installed home-directory copy.
 func EmbeddedWorkerSource() ([]byte, error) {
 	return canonicalWorkerSource, nil
+}
+
+// EmbeddedExploreSource returns the raw bytes of the repo-owned canonical
+// read-only discovery subagent definition. Exported only so cross-package tests
+// can inspect it without reaching for the installed home-directory copy.
+func EmbeddedExploreSource() ([]byte, error) {
+	return canonicalExploreSource, nil
 }
 
 // EnvConfigContent is OpenCode's runtime inline configuration mechanism: when
@@ -48,8 +58,14 @@ const EnvConfigContent = "OPENCODE_CONFIG_CONTENT"
 const AgentName = "global-build-worker"
 
 // ExploreAgentName is the built-in read-only discovery subagent admitted by the
-// canonical worker contract.
+// canonical worker contract. Deprecated: use GlobalBuildExploreAgentName.
 const ExploreAgentName = "explore"
+
+// GlobalBuildExploreAgentName is the dedicated repo-owned read-only discovery
+// subagent injected by global-build for every BUILD invocation. It replaces the
+// mutable external built-in `explore` agent so stale/custom invocation config
+// cannot alter the delegated investigator contract.
+const GlobalBuildExploreAgentName = "global-build-explore"
 
 // Part mirrors the subset of message-part fields the runner relies on.
 type Part struct {
@@ -297,38 +313,96 @@ func CanonicalWorkerBody() (string, error) {
 	return body, nil
 }
 
-// applyExploreReadOnlyOverride owns the Explore tool surface for this single
-// global-build invocation. OpenCode 1.18.23's built-in Explore agent otherwise
-// allows bash, webfetch, and websearch, and child sessions use the subagent's own
-// permissions rather than inheriting the parent's narrower intent. Preserve all
-// non-permission Explore metadata, but replace its permission block with a
-// deny-by-default allow-list containing only dedicated local read/search tools.
+// applyExploreReadOnlyOverride owns the read-only discovery subagent tool
+// surface for this single global-build invocation. The built-in Explore agent
+// otherwise allows bash, webfetch, and websearch, and child sessions use the
+// subagent's own permissions rather than inheriting the parent's narrower intent.
+// Preserve all non-permission Explore metadata, but replace its permission block
+// with a deny-by-default allow-list containing only dedicated local read/search
+// tools. Also injects the canonical global-build-explore agent definition so
+// stale/custom invocation config cannot replace or disable it.
 func applyExploreReadOnlyOverride(agents map[string]json.RawMessage) error {
+	// Inject the canonical global-build-explore agent definition. Parse its
+	// frontmatter to extract mode/steps/permission, then set the prompt from the
+	// literal body. This ensures the agent is always present with canonical
+	// semantics regardless of any stale external config.
+	exploreFM, explorePrompt, err := parseEmbeddedExplore()
+	if err != nil {
+		return fmt.Errorf("cannot load canonical explore source: %w", err)
+	}
+
 	explore := map[string]json.RawMessage{}
-	if raw, ok := agents[ExploreAgentName]; ok {
+	if raw, ok := agents[GlobalBuildExploreAgentName]; ok {
 		if err := json.Unmarshal(raw, &explore); err != nil {
-			return fmt.Errorf("existing %s agent block is not a valid object: %w", ExploreAgentName, err)
+			return fmt.Errorf("existing %s agent block is not a valid object: %w", GlobalBuildExploreAgentName, err)
 		}
 	}
 
-	permissionRaw, err := json.Marshal(map[string]string{
-		"*":    "deny",
-		"glob": "allow",
-		"grep": "allow",
-		"list": "allow",
-		"read": "allow",
-	})
-	if err != nil {
-		return fmt.Errorf("cannot encode %s permission override: %w", ExploreAgentName, err)
+	// Canonical fields always win.
+	for k, v := range exploreFM {
+		explore[k] = v
 	}
-	explore["permission"] = permissionRaw
+	promptJSON, err := json.Marshal(explorePrompt)
+	if err != nil {
+		return fmt.Errorf("cannot encode canonical explore prompt: %w", err)
+	}
+	explore["prompt"] = promptJSON
 
 	exploreRaw, err := json.Marshal(explore)
 	if err != nil {
-		return fmt.Errorf("cannot encode %s override: %w", ExploreAgentName, err)
+		return fmt.Errorf("cannot encode %s override: %w", GlobalBuildExploreAgentName, err)
 	}
-	agents[ExploreAgentName] = exploreRaw
+	agents[GlobalBuildExploreAgentName] = exploreRaw
+
+	// Also override the legacy built-in `explore` agent if present, so stale
+	// external config cannot weaken it either. Preserve non-permission metadata.
+	if raw, ok := agents[ExploreAgentName]; ok {
+		legacyExplore := map[string]json.RawMessage{}
+		if err := json.Unmarshal(raw, &legacyExplore); err != nil {
+			return fmt.Errorf("existing %s agent block is not a valid object: %w", ExploreAgentName, err)
+		}
+		permissionRaw, err := json.Marshal(map[string]string{
+			"*":    "deny",
+			"glob": "allow",
+			"grep": "allow",
+			"list": "allow",
+			"read": "allow",
+		})
+		if err != nil {
+			return fmt.Errorf("cannot encode %s permission override: %w", ExploreAgentName, err)
+		}
+		legacyExplore["permission"] = permissionRaw
+		legacyRaw, err := json.Marshal(legacyExplore)
+		if err != nil {
+			return fmt.Errorf("cannot encode %s override: %w", ExploreAgentName, err)
+		}
+		agents[ExploreAgentName] = legacyRaw
+	}
 	return nil
+}
+
+// parseEmbeddedExplore splits the repo-owned canonical explore Markdown into its
+// YAML frontmatter (as a generic map) and its prompt body. Mirrors the same
+// semantics as parseEmbeddedWorker but operates on the explore agent file.
+func parseEmbeddedExplore() (map[string]json.RawMessage, string, error) {
+	text := string(canonicalExploreSource)
+	parts := strings.SplitN(text, "---", 3)
+	if len(parts) < 3 {
+		return nil, "", fmt.Errorf("embedded explore source lacks frontmatter delimiters")
+	}
+	var rawMap map[string]interface{}
+	if err := yaml.Unmarshal([]byte(parts[1]), &rawMap); err != nil {
+		return nil, "", fmt.Errorf("canonical explore frontmatter is not valid YAML: %w", err)
+	}
+	out, err := json.Marshal(rawMap)
+	if err != nil {
+		return nil, "", fmt.Errorf("cannot marshal canonical explore frontmatter to JSON: %w", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, "", fmt.Errorf("cannot re-parse canonical explore frontmatter: %w", err)
+	}
+	return raw, strings.TrimSpace(parts[2]), nil
 }
 
 // BuildInlineConfig returns the merged OPENCODE_CONFIG_CONTENT JSON string for
@@ -555,7 +629,20 @@ func (s *syncedWriter) Write(p []byte) (int, error) {
 // primary reaches a terminal semantic outcome but renders malformed BUILD
 // protocol text, Invoke may perform exactly one tool-less continuation of that
 // exact session to re-render the already-reached outcome.
+//
+// Invoke creates its own Tracker internally; callers that need a live-progress
+// watchdog to observe the exact same tracker while OpenCode is still running
+// should use InvokeWithTracker instead.
 func Invoke(ctx context.Context, bin, worktreeDir, taskBody string, stderrOut io.Writer) (*Attempt, error) {
+	return InvokeWithTracker(ctx, bin, worktreeDir, taskBody, NewTracker(), stderrOut)
+}
+
+// InvokeWithTracker is the same as Invoke but accepts an externally-owned
+// Tracker so the caller's watchdog can observe events in real-time while the
+// child is still running. The tracker must be the same instance the runner's
+// progress watchdog reads from; this is how the live-progress contract is
+// enforced rather than observing only the post-invoke tracker snapshot.
+func InvokeWithTracker(ctx context.Context, bin, worktreeDir, taskBody string, tracker *Tracker, stderrOut io.Writer) (*Attempt, error) {
 	// Each BUILD invocation must grant the worker external_directory access to
 	// ONLY its exact current disposable worktree. We inject that as a run-specific
 	// runtime inline config (OPENCODE_CONFIG_CONTENT), merging over any config
@@ -594,7 +681,6 @@ func Invoke(ctx context.Context, bin, worktreeDir, taskBody string, stderrOut io
 		return &Attempt{SpawnErr: err}, nil
 	}
 
-	tracker := NewTracker()
 	corrupt := false
 	sessionID := ""
 	sessionConflict := false

@@ -481,6 +481,79 @@ func TestProgressWatchdogTimeout(t *testing.T) {
 	assertWorktreeGone(t, e.worktreePath(t, runID))
 }
 
+// TestProgressWatchdogFollowsLatestEvent proves the watchdog clock follows the
+// latest meaningful progress event, not process start time. A worker that emits
+// periodic progress while sleeping must NOT be killed while progress continues,
+// even if the total wall time exceeds any reasonable ProgressWindow.
+func TestProgressWatchdogFollowsLatestEvent(t *testing.T) {
+	e := setupFake(t, "sustained_progress_no_kill")
+	runID := "run-prog-live-1"
+	// Budgets are deliberately tight: total wall time of the fake is ~4.5s
+	// (30 events * 0.15s), but progress events are emitted every 0.15s so the
+	// watchdog should never fire. Use a window smaller than total wall time but
+	// larger than the inter-event gap to prove clock follows latest event.
+	code, stdout, _ := e.run(t, envelopeText(runID, e.admittedOID, "docs/"), func(c *Config) {
+		c.WallClock = 10 * time.Second
+		c.ProgressWindow = 500 * time.Millisecond
+	})
+
+	if code != ExitComplete {
+		t.Fatalf("exit = %d, want 0 (worker emitted continuous progress)\nstdout:\n%s", code, stdout)
+	}
+	if n := e.callCount(t); n != 1 {
+		t.Errorf("calls = %d, want 1", n)
+	}
+	if _, exists := refOID(t, e.repoRoot, "refs/build-candidates/"+runID); !exists {
+		t.Error("candidate ref must be created; watchdog did not kill sustained progress")
+	}
+	assertWorktreeGone(t, e.worktreePath(t, runID))
+}
+
+// TestProgressWatchdogTimeoutAfterStall proves the watchdog fires when progress
+// stalls after a final event, even if that final event was recent relative to
+// process start. The clock must follow the latest meaningful event, not spawn.
+func TestProgressWatchdogTimeoutAfterStall(t *testing.T) {
+	e := setupFake(t, "progress_then_stall")
+	runID := "run-prog-stall-1"
+	start := time.Now()
+	code, stdout, _ := e.run(t, envelopeText(runID, e.admittedOID, "docs/"), func(c *Config) {
+		c.WallClock = 10 * time.Second
+		c.ProgressWindow = 800 * time.Millisecond
+	})
+	elapsed := time.Since(start)
+
+	if code != ExitRunnerError {
+		t.Fatalf("exit = %d, want 40 (stall must trigger timeout)\nstdout:\n%s", code, stdout)
+	}
+	if stdoutKeys(t, stdout)["ERROR_KIND"] != "TIMEOUT" {
+		t.Errorf("progress watchdog did not produce TIMEOUT on stall: %s", stdout)
+	}
+	if elapsed > 5*time.Second {
+		t.Errorf("watchdog took %s to fire; should have fired within ProgressWindow of stall", elapsed)
+	}
+	if n := e.callCount(t); n != 1 {
+		t.Errorf("timeouts must never be retried; calls = %d", n)
+	}
+	assertWorktreeGone(t, e.worktreePath(t, runID))
+}
+
+func TestTwoCommitsCompleteRejected(t *testing.T) {
+	e := setupFake(t, "two_commits_complete")
+	runID := "run-two-commit-1"
+	code, stdout, _ := e.run(t, envelopeText(runID, e.admittedOID, "docs/"), nil)
+
+	if code != ExitRunnerError {
+		t.Fatalf("exit = %d, want 40 (two commits must be rejected)\nstdout:\n%s", code, stdout)
+	}
+	if stdoutKeys(t, stdout)["ERROR_KIND"] != "CANDIDATE_VALIDATION_FAILED" {
+		t.Errorf("ERROR_KIND = %q, want CANDIDATE_VALIDATION_FAILED", stdoutKeys(t, stdout)["ERROR_KIND"])
+	}
+	if _, exists := refOID(t, e.repoRoot, "refs/build-candidates/"+runID); exists {
+		t.Error("candidate ref must not be created when commit count != 1")
+	}
+	assertWorktreeGone(t, e.worktreePath(t, runID))
+}
+
 func TestTransientRetryExactlyOnceThenSuccess(t *testing.T) {
 	e := setupFake(t, "transient_then_success")
 	runID := "run-retry-ok-1"
