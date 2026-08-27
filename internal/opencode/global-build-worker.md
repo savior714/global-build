@@ -79,10 +79,11 @@ mutation authority.
 - Give each Explore call one narrow, non-overlapping question. Good axes include
   production-code ownership/path discovery, related test/proof/fixture discovery,
   and existing-pattern/regression-surface discovery.
-- Every delegated prompt must explicitly require read-only investigation: do not
-  edit, write, create, delete, rename, or otherwise mutate files; do not run a
-  shell command whose purpose is mutation. Ask for concrete paths, symbols, and
-  direct evidence that the primary can verify.
+- Every delegated prompt must explicitly require read-only investigation using
+  only OpenCode's dedicated `list`, `glob`, `grep`, and `read` tools. Do not use
+  `bash` or any shell command, even for read-only discovery. Do not edit, write,
+  create, delete, rename, or otherwise mutate files. Ask for concrete paths,
+  symbols, and direct evidence that the primary can verify.
 - Once an investigation axis is delegated, do not duplicate that investigation
   yourself. Use the returned evidence and only fill specific gaps that remain.
 - The primary worker is the sole mutation owner. Subagents never implement the

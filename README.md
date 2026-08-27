@@ -54,11 +54,12 @@ Current worker invariants:
 - `task`: deny-by-default; only the built-in read-only `explore` subagent is admitted
 - delegation is bounded to at most three Explore calls per BUILD, using the minimum useful number and parallel dispatch only for genuinely independent investigation axes
 - delegated investigation must be read-only and non-overlapping; the primary remains the sole mutation owner and runs the final PRIMARY PROOF itself
+- every Explore prompt must use only OpenCode's dedicated `list`, `glob`, `grep`, and `read` tools; Bash/shell is forbidden even for read-only discovery
 - unsafe Git publication/topology commands: denied
 - `external_directory`: denied globally and allowed only for the exact disposable worktree of the current run
 - worker never pushes or publishes
 
-The delegation policy is an orchestration optimization, not extra mutation authority. Direct reads remain preferred for isolated known-file questions. When delegation is appropriate, the worker should ask separate Explore agents for narrow evidence such as production-code ownership, tests/proof/fixtures, or existing patterns/regression surfaces, and must not duplicate the delegated investigation itself. `general`, `scout`, and other subagents remain outside the worker contract.
+The delegation policy is an orchestration optimization, not extra mutation authority. Direct reads remain preferred for isolated known-file questions. When delegation is appropriate, the worker should ask separate Explore agents for narrow evidence such as production-code ownership, tests/proof/fixtures, or existing patterns/regression surfaces, and must not duplicate the delegated investigation itself. Explore prompts explicitly avoid Bash because current OpenCode 1.x Explore can otherwise choose shell-based `ls`/`rg`-style discovery and trigger an unnecessary permission path even though dedicated read/search tools are available. `general`, `scout`, and other subagents remain outside the worker contract.
 
 ### OpenCode compatibility
 
