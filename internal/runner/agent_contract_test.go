@@ -142,11 +142,14 @@ func TestAgentContractSmoke(t *testing.T) {
 	if fm.Permission.Edit != "allow" {
 		t.Errorf("edit permission = %q, want allow", fm.Permission.Edit)
 	}
-	for _, key := range []string{"Webfetch", "Websearch", "Question"} {
-		v := map[string]string{"Webfetch": fm.Permission.Webfetch, "Websearch": fm.Permission.Websearch, "Question": fm.Permission.Question}[key]
-		if v != "deny" {
-			t.Errorf("%s permission = %q, want deny", key, v)
-		}
+	if fm.Permission.Webfetch != "allow" {
+		t.Errorf("webfetch permission = %q, want allow", fm.Permission.Webfetch)
+	}
+	if fm.Permission.Websearch != "allow" {
+		t.Errorf("websearch permission = %q, want allow", fm.Permission.Websearch)
+	}
+	if fm.Permission.Question != "deny" {
+		t.Errorf("question permission = %q, want deny", fm.Permission.Question)
 	}
 
 	task := fm.Permission.Task
@@ -169,42 +172,31 @@ func TestAgentContractSmoke(t *testing.T) {
 	}
 
 	bash := fm.Permission.Bash
-	if bash["*"] != "deny" {
-		t.Errorf(`bash["*"] = %q, want "deny" for default-deny Git authority`, bash["*"])
-	}
-	// Safe read/commit operations must remain allowed.
-	for _, rule := range []string{
-		"git status*", "git diff*", "git log*", "git rev-parse*",
-		"git add*", "git commit*", "git restore*",
-	} {
-		if bash[rule] != "allow" {
-			t.Errorf(`bash[%q] = %q, want allow`, rule, bash[rule])
-		}
+	if bash["*"] != "allow" {
+		t.Errorf(`bash["*"] = %q, want "allow" for ordinary local shell capability`, bash["*"])
 	}
 	// Dangerous topology/ref/remote operations must remain denied.
 	for _, rule := range []string{
 		"git merge*", "git rebase*", "git cherry-pick*", "git fetch*",
 		"git pull*", "git push*", "git branch*", "git tag*",
-		"git reset*", "git stash*", "git worktree*", "git clean*",
-		"git gc*", "git prune*", "git reflog*", "sudo*",
+		"git update-ref*", "git remote*", "git clone*", "git reset*",
+		"git stash*", "git worktree*", "git clean*",
+		"git gc*", "git prune*", "git reflog*", "git filter-branch*",
+		"git replace*", "sudo*",
 	} {
 		if bash[rule] != "deny" {
 			t.Errorf(`bash[%q] = %q, want deny`, rule, bash[rule])
 		}
 	}
 
-	// Ordered rules: broad deny FIRST, narrow allows LAST (last-match-wins).
-	broadIdx := strings.Index(frontmatterText, `"*": "deny"`)
-	statusAllowIdx := strings.Index(frontmatterText, `"git status*": "allow"`)
+	// Ordered rules: broad allow FIRST, narrow denies LAST (last-match-wins).
+	broadIdx := strings.Index(frontmatterText, `"*": "allow"`)
 	pushDenyIdx := strings.Index(frontmatterText, `"git push*": "deny"`)
-	if broadIdx < 0 || statusAllowIdx < 0 || pushDenyIdx < 0 {
-		t.Errorf("bash rule ordering incomplete: broad deny at %d, git status allow at %d, git push deny at %d", broadIdx, statusAllowIdx, pushDenyIdx)
+	if broadIdx < 0 || pushDenyIdx < 0 {
+		t.Errorf("bash rule ordering incomplete: broad allow at %d, git push deny at %d", broadIdx, pushDenyIdx)
 	}
-	if broadIdx > statusAllowIdx {
-		t.Errorf("bash rule ordering broken: broad deny at %d, git status allow at %d", broadIdx, statusAllowIdx)
-	}
-	if statusAllowIdx > pushDenyIdx {
-		t.Errorf("bash rule ordering broken: git status allow at %d, git push deny at %d", statusAllowIdx, pushDenyIdx)
+	if broadIdx > pushDenyIdx {
+		t.Errorf("bash rule ordering broken: broad allow at %d, git push deny at %d", broadIdx, pushDenyIdx)
 	}
 
 	// Publication prohibition and exact protocol blocks must be present.

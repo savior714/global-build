@@ -405,14 +405,14 @@ func TestCanonicalWorkerOverridesStaleConfig(t *testing.T) {
 	perm := worker.Permission
 
 	if perm["websearch"] == nil {
-		t.Errorf("canonical websearch deny missing from merged permission")
+		t.Errorf("canonical websearch allow missing from merged permission")
 	} else {
 		var ws string
 		if err := json.Unmarshal(perm["websearch"], &ws); err != nil {
 			t.Fatalf("websearch value invalid: %v", err)
 		}
-		if ws != "deny" {
-			t.Errorf("websearch = %q, want deny (canonical override of stale allow)", ws)
+		if ws != "allow" {
+			t.Errorf("websearch = %q, want allow (canonical override of stale config)", ws)
 		}
 	}
 

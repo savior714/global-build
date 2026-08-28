@@ -868,3 +868,57 @@ func TestEmptyLocatorFailsClosed(t *testing.T) {
 		t.Errorf("empty locator must never reach the worker; calls = %d", n)
 	}
 }
+
+// --- representative non-Git PRIMARY PROOF capability -------------------------
+
+// TestNonGitProofSucceeds proves the worker can execute ordinary non-Git shell
+// commands (build/test/lint/proof) as required by PRIMARY PROOF. The fake
+// simulates a Go test passing and the runner must accept the COMPLETE outcome.
+func TestNonGitProofSucceeds(t *testing.T) {
+	e := setupFake(t, "non_git_proof")
+	runID := "run-non-git-proof-1"
+	code, stdout, stderrOut := e.run(t, envelopeText(runID, e.admittedOID, "docs/"), nil)
+
+	if code != ExitComplete {
+		t.Fatalf("exit = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, stdout, stderrOut)
+	}
+	keys := stdoutKeys(t, stdout)
+	if keys["RUN_RESULT"] != "COMPLETE" {
+		t.Errorf("RUN_RESULT = %q", keys["RUN_RESULT"])
+	}
+	if _, exists := refOID(t, e.repoRoot, "refs/build-candidates/"+runID); !exists {
+		t.Error("candidate ref must be created for non-Git PRIMARY PROOF success")
+	}
+	assertWorktreeGone(t, e.worktreePath(t, runID))
+	if n := e.callCount(t); n != 1 {
+		t.Errorf("calls = %d, want 1", n)
+	}
+}
+
+// TestFailingNonGitProofProducesBlocked proves that when PRIMARY PROOF fails
+// (e.g. go test exits non-zero), the worker reports BLOCKED and no candidate
+// ref is created. This validates that the worker does not coerce failure into
+// a false COMPLETE when shell proof commands fail.
+func TestFailingNonGitProofProducesBlocked(t *testing.T) {
+	e := setupFake(t, "failing_test_blocked")
+	runID := "run-failing-proof-1"
+	code, stdout, _ := e.run(t, envelopeText(runID, e.admittedOID, "docs/"), nil)
+
+	if code != ExitBlocked {
+		t.Fatalf("exit = %d, want 20\nstdout:\n%s", code, stdout)
+	}
+	keys := stdoutKeys(t, stdout)
+	if keys["RUN_RESULT"] != "BLOCKED" {
+		t.Errorf("RUN_RESULT = %q", keys["RUN_RESULT"])
+	}
+	if keys["BLOCKER"] == "" {
+		t.Error("BLOCKED must carry a BLOCKER field")
+	}
+	if keys["EVIDENCE"] == "" {
+		t.Error("BLOCKED must carry EVIDENCE")
+	}
+	if _, exists := refOID(t, e.repoRoot, "refs/build-candidates/"+runID); exists {
+		t.Error("no candidate ref may exist for BLOCKED")
+	}
+	assertWorktreeGone(t, e.worktreePath(t, runID))
+}

@@ -68,7 +68,7 @@ scenario="${GB_FAKE_SCENARIO:-}"
 # Scenarios that touch the repository must run inside the disposable worktree
 # real OpenCode would have been pointed at via --dir.
 case "$scenario" in
-  complete|dirty_complete|outside_surface|continuable|identity_mismatch|transient_then_success|malformed_then_finalized|malformed_then_malformed|malformed_no_session)
+  complete|dirty_complete|outside_surface|continuable|identity_mismatch|transient_then_success|malformed_then_finalized|malformed_then_malformed|malformed_no_session|non_git_proof|failing_test_blocked)
     if [ -z "$dir" ]; then
       echo "fake opencode: scenario '$scenario' requires --dir <worktree>" >&2
       exit 3
@@ -268,6 +268,30 @@ case "$scenario" in
     commondir=$(git rev-parse --git-common-dir)
     mainrepo=$(dirname "$commondir")
     git -C "$mainrepo" worktree move "$PWD" "${PWD}.moved" >/dev/null 2>&1 || mv "$PWD" "${PWD}.moved"
+    ;;
+
+  non_git_proof)
+    # Proves the worker can execute ordinary non-Git shell commands (e.g. go test,
+    # echo, cat) as part of PRIMARY PROOF. The fake simulates a Go test passing
+    # by writing a marker file and emitting COMPLETE.
+    emit "$step_start"
+    emit "$text_progress"
+    # Simulate: worker ran `go test ./...` (ordinary non-Git shell) which passed.
+    printf 'mutation\n' >> "$dir/docs/notes.txt"
+    git add -A >/dev/null 2>&1
+    git commit -qm "candidate change" >/dev/null 2>&1
+    emit '{"type":"tool_use","timestamp":3,"sessionID":"ses_1","part":{"id":"p3","type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"go test ./..."},"output":"ok"}}}'
+    emit '{"type":"text","timestamp":4,"sessionID":"ses_1","part":{"id":"p4","type":"text","text":"RESULT: COMPLETE\nPRIMARY_PROOF: PASS","time":{"start":3,"end":4}}}'
+    ;;
+
+  failing_test_blocked)
+    # Proves that when PRIMARY PROOF fails (simulated by a failing "test"),
+    # the worker reports BLOCKED rather than COMPLETE.
+    emit "$step_start"
+    emit "$text_progress"
+    emit "$tool_use"
+    final='RESULT: BLOCKED\nBLOCKER: go test ./... failed with exit code 1\nEVIDENCE: go test ./... reported FAIL: TestFoo at main.go:5 (unexpected output)'
+    emit "{\"type\":\"text\",\"timestamp\":4,\"sessionID\":\"ses_1\",\"part\":{\"id\":\"p4\",\"type\":\"text\",\"text\":\"$final\",\"time\":{\"start\":3,\"end\":4}}}"
     ;;
 
   *)

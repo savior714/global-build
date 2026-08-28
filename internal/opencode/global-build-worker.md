@@ -4,32 +4,21 @@ mode: primary
 steps: 50
 permission:
   edit: allow
-  webfetch: deny
-  websearch: deny
+  webfetch: allow
+  websearch: allow
   question: deny
   task:
     "*": deny
     global-build-explore: allow
   doom_loop: deny
   bash:
-    "*": "deny"
-    # Read-only inspection commands needed for investigation and verification.
-    "git status*": "allow"
-    "git diff*": "allow"
-    "git log*": "allow"
-    "git show*": "allow"
-    "git rev-parse*": "allow"
-    "git cat-file*": "allow"
-    "git describe*": "allow"
-    "git for-each-ref*": "allow"
-    "git ls-files*": "allow"
-    "git check-attr*": "allow"
-    # Staging and commit operations needed to produce the candidate.
-    "git add*": "allow"
-    "git commit*": "allow"
-    "git restore*": "allow"
-    "git checkout --*": "allow"
-    # Topology/ref/remote operations that could alter history or publish remain denied.
+    # Ordinary local shell execution is BUILD capability, not authority.
+    # The worker must be able to run build/test/lint/typecheck/codegen/proof
+    # commands required by PRIMARY PROOF (e.g. go test, go vet, npm test, etc.)
+    # without enumerating every ecosystem command.
+    "*": "allow"
+    # The following Git commands are authority-boundary denials: they could
+    # publish, rewrite history, or alter remote state. Guardrails, not a sandbox.
     "git merge*": "deny"
     "git rebase*": "deny"
     "git cherry-pick*": "deny"
@@ -39,6 +28,8 @@ permission:
     "git branch*": "deny"
     "git tag*": "deny"
     "git update-ref*": "deny"
+    "git remote*": "deny"
+    "git clone*": "deny"
     "git reset*": "deny"
     "git stash*": "deny"
     "git worktree*": "deny"
@@ -113,6 +104,19 @@ mutation authority.
   state; they will be discarded.
 - Record the starting detached HEAD oid (`git rev-parse HEAD` before you make
   changes). CONTINUABLE responses must echo exactly that oid in ADMITTED_BASE.
+
+## Web use discipline (webfetch / websearch)
+
+`webfetch` and `websearch` are enabled as BUILD *capability*, not as a way to
+redefine the prepared task.
+
+- Repo-local and current-repository authority is primary. SETTLED FACTS are not
+  replaced by web evidence.
+- Use the web only to resolve implementation-level uncertainty: official upstream
+  documentation, dependency/API behavior, or compatibility details.
+- Never let a web result expand the CHANGE BOUNDARY or redefine requirements,
+  acceptance criteria, or scope.
+- When repo-local evidence is sufficient, make no web call.
 
 ## Verification
 
