@@ -11,36 +11,38 @@ func TestParseVersionAcceptsSupportedGeneration(t *testing.T) {
 		version string
 		major   int
 		minor   int
+		patch   int
 	}{
-		{"1.18.23\n", "1.18.23", 1, 18},
-		{"opencode v1.19.0\n", "1.19.0", 1, 19},
-		{"OpenCode 1.20.1-beta.2", "1.20.1-beta.2", 1, 20},
+		{"1.18.23\n", "1.18.23", 1, 18, 23},
+		{"opencode v1.19.0\n", "1.19.0", 1, 19, 0},
+		{"OpenCode 1.20.1-beta.2", "1.20.1-beta.2", 1, 20, 1},
 	}
 	for _, tc := range cases {
-		version, major, minor, err := parseVersion(tc.input)
+		version, major, minor, patch, err := parseVersion(tc.input)
 		if err != nil {
 			t.Fatalf("parseVersion(%q): %v", tc.input, err)
 		}
-		if version != tc.version || major != tc.major || minor != tc.minor {
-			t.Fatalf("parseVersion(%q) = (%q,%d,%d), want (%q,%d,%d)", tc.input, version, major, minor, tc.version, tc.major, tc.minor)
+		if version != tc.version || major != tc.major || minor != tc.minor || patch != tc.patch {
+			t.Fatalf("parseVersion(%q) = (%q,%d,%d,%d), want (%q,%d,%d,%d)", tc.input, version, major, minor, patch, tc.version, tc.major, tc.minor, tc.patch)
 		}
 	}
 }
 
 func TestParseVersionRejectsUnparseableOutput(t *testing.T) {
-	if _, _, _, err := parseVersion("OpenCode development build"); err == nil {
+	if _, _, _, _, err := parseVersion("OpenCode development build"); err == nil {
 		t.Fatal("version output without a semantic version should be rejected")
 	}
 }
 
-func TestCheckCompatibilityAdmitsOnly1_18(t *testing.T) {
+func TestCheckCompatibilityAdmitsOnly1_18_23(t *testing.T) {
 	cases := []struct {
 		input   string
 		wantErr bool
 	}{
 		{"opencode 1.18.23\n", false},
-		{"opencode 1.18.0\n", false},
-		{"opencode 1.18.99\n", false},
+		// Other 1.18.x patches are NOT admitted — only the explicitly tested patch is accepted.
+		{"opencode 1.18.0\n", true},
+		{"opencode 1.18.99\n", true},
 		{"OpenCode v1.17.5\n", true},
 		{"OpenCode 1.17.0\n", true},
 		{"opencode 1.19.0\n", true},
@@ -52,13 +54,13 @@ func TestCheckCompatibilityAdmitsOnly1_18(t *testing.T) {
 	for _, tc := range cases {
 		// Test the admission decision by calling parseVersion and simulating
 		// the check that CheckCompatibility performs.
-		version, major, minor, err := parseVersion(tc.input)
+		version, major, minor, patch, err := parseVersion(tc.input)
 		if err != nil {
 			t.Fatalf("parseVersion(%q): %v", tc.input, err)
 		}
-		admitted := major == SupportedMajor && minor == AdmittedMinor
+		admitted := major == SupportedMajor && minor == AdmittedMinor && patch == AdmittedPatch
 		if admitted != !tc.wantErr {
-			t.Errorf("version %s (major=%d minor=%d): admitted=%v, wantErr=%v", version, major, minor, admitted, tc.wantErr)
+			t.Errorf("version %s (major=%d minor=%d patch=%d): admitted=%v, wantErr=%v", version, major, minor, patch, admitted, tc.wantErr)
 		}
 	}
 }

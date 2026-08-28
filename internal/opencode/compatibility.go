@@ -12,21 +12,22 @@ import (
 
 const (
 	// The current global-build runtime contract is proven against the OpenCode
-	// 1.x legacy agent/permission generation. 1.18.23 is the latest explicitly
-	// accepted runtime proof; only the 1.18 minor line is admitted. Pre-1.18
-	// and 1.19+ require a separate compatibility and runtime acceptance pass.
-	SupportedMajor    = 1
-	AdmittedMinor     = 18
-	versionProbeLimit = 5 * time.Second
+	// 1.x legacy agent/permission generation. Only the explicitly tested patch
+	// 1.18.23 is admitted; other 1.18.x patches and all other generations
+	// require a separate compatibility and runtime acceptance pass.
+	SupportedMajor      = 1
+	AdmittedMinor       = 18
+	AdmittedPatch       = 23
+	versionProbeLimit   = 5 * time.Second
 )
 
 var versionRE = regexp.MustCompile(`(?m)(?:^|[^0-9])v?([0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?)(?:$|[^0-9])`)
 
 // CheckCompatibility proves that the installed OpenCode executable belongs to
 // the configuration generation global-build currently understands. This is a
-// fail-closed generation guard, not an exact patch pin: newer compatible 1.x
-// minors remain admissible, while pre-1.18 and V2 must be independently
-// accepted before global-build will execute a mutating BUILD with them.
+// fail-closed generation guard that admits only the explicitly tested patch
+// 1.18.23; any other version requires a separate compatibility and runtime
+// acceptance pass before global-build will execute a mutating BUILD with it.
 func CheckCompatibility(ctx context.Context, bin string) (string, error) {
 	probeCtx, cancel := context.WithTimeout(ctx, versionProbeLimit)
 	defer cancel()
@@ -40,34 +41,38 @@ func CheckCompatibility(ctx context.Context, bin string) (string, error) {
 		return "", fmt.Errorf("OpenCode compatibility probe failed: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
-	version, major, minor, err := parseVersion(string(out))
+	version, major, minor, patch, err := parseVersion(string(out))
 	if err != nil {
 		return "", err
 	}
-	if major != SupportedMajor || minor != AdmittedMinor {
-		return "", fmt.Errorf("unsupported OpenCode version %s: global-build is accepted only for OpenCode %d.%d.x; a different configuration generation must be independently accepted first", version, SupportedMajor, AdmittedMinor)
+	if major != SupportedMajor || minor != AdmittedMinor || patch != AdmittedPatch {
+		return "", fmt.Errorf("unsupported OpenCode version %s: global-build is accepted only for OpenCode %d.%d.%d; a different configuration generation must be independently accepted first", version, SupportedMajor, AdmittedMinor, AdmittedPatch)
 	}
 	return version, nil
 }
 
-func parseVersion(output string) (version string, major, minor int, err error) {
+func parseVersion(output string) (version string, major, minor, patch int, err error) {
 	match := versionRE.FindStringSubmatch(output)
 	if len(match) < 2 {
-		return "", 0, 0, fmt.Errorf("cannot determine OpenCode semantic version from %q", strings.TrimSpace(output))
+		return "", 0, 0, 0, fmt.Errorf("cannot determine OpenCode semantic version from %q", strings.TrimSpace(output))
 	}
 	version = match[1]
 	core := strings.FieldsFunc(version, func(r rune) bool { return r == '-' || r == '+' })[0]
 	parts := strings.Split(core, ".")
 	if len(parts) != 3 {
-		return "", 0, 0, fmt.Errorf("cannot parse OpenCode semantic version %q", version)
+		return "", 0, 0, 0, fmt.Errorf("cannot parse OpenCode semantic version %q", version)
 	}
 	major, err = strconv.Atoi(parts[0])
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("cannot parse OpenCode major version %q: %w", version, err)
+		return "", 0, 0, 0, fmt.Errorf("cannot parse OpenCode major version %q: %w", version, err)
 	}
 	minor, err = strconv.Atoi(parts[1])
 	if err != nil {
-		return "", 0, 0, fmt.Errorf("cannot parse OpenCode minor version %q: %w", version, err)
+		return "", 0, 0, 0, fmt.Errorf("cannot parse OpenCode minor version %q: %w", version, err)
 	}
-	return version, major, minor, nil
+	patch, err = strconv.Atoi(parts[2])
+	if err != nil {
+		return "", 0, 0, 0, fmt.Errorf("cannot parse OpenCode patch version %q: %w", version, err)
+	}
+	return version, major, minor, patch, nil
 }
