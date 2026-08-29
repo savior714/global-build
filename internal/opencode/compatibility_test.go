@@ -13,7 +13,7 @@ func TestParseVersionAcceptsSupportedGeneration(t *testing.T) {
 		minor   int
 		patch   int
 	}{
-		{"1.18.23\n", "1.18.23", 1, 18, 23},
+		{"1.18.25\n", "1.18.25", 1, 18, 25},
 		{"opencode v1.19.0\n", "1.19.0", 1, 19, 0},
 		{"OpenCode 1.20.1-beta.2", "1.20.1-beta.2", 1, 20, 1},
 	}
@@ -34,12 +34,15 @@ func TestParseVersionRejectsUnparseableOutput(t *testing.T) {
 	}
 }
 
-func TestCheckCompatibilityAdmitsOnly1_18_23(t *testing.T) {
+func TestCheckCompatibilityAdmitsOnly1_18_25(t *testing.T) {
 	cases := []struct {
 		input   string
 		wantErr bool
 	}{
-		{"opencode 1.18.23\n", false},
+		{"opencode 1.18.25\n", false},
+		// The previously-admitted 1.18.23 patch is no longer admitted once the
+		// runner tracks the installed OpenCode generation.
+		{"opencode 1.18.23\n", true},
 		// Other 1.18.x patches are NOT admitted — only the explicitly tested patch is accepted.
 		{"opencode 1.18.0\n", true},
 		{"opencode 1.18.99\n", true},

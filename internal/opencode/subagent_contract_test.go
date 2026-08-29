@@ -60,7 +60,6 @@ func TestCanonicalWorkerAllowsOnlyExploreSubagent(t *testing.T) {
 	}
 
 	for _, required := range []string{
-		"hard maximum of three Explore calls total in this BUILD",
 		"launch them in parallel in the same turn",
 		"do not duplicate that investigation",
 		"primary worker is the sole mutation owner",

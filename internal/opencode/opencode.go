@@ -272,7 +272,7 @@ type Attempt struct {
 // The body is the literal Markdown text after the closing frontmatter
 // delimiter, trimmed. This mirrors OpenCode's legacy Markdown agent loader
 // semantics: "the file body becomes the agent's prompt" (verified against the
-// installed OpenCode 1.18.23 generation). We do NOT reconstruct the body from
+// installed OpenCode 1.18.25 generation). We do NOT reconstruct the body from
 // prose; we use the literal worker body that ships in the repo.
 func parseEmbeddedWorker() (frontmatter map[string]json.RawMessage, body string, err error) {
 	text := string(canonicalWorkerSource)
@@ -419,11 +419,13 @@ func parseEmbeddedExplore() (map[string]json.RawMessage, string, error) {
 //	}
 //
 // The canonical worker source (internal/opencode/global-build-worker.md) owns
-// description, mode, steps, the canonical permission entries, and the
+// description, mode, the canonical permission entries, and the
 // instruction body (prompt). Canonical-owned fields / sub-fields always
 // override stale values for the SAME keys. Unrelated invocation-specific fields
 // (e.g. a worker-scoped model/variant) are preserved because the canonical
-// source does not own them. NOTE: this is key-level override, not blanket
+// source does not own them. The primary worker is intentionally not given a
+// steps budget: it terminates on its own rather than on a fixed step counter.
+// NOTE: this is key-level override, not blanket
 // permission isolation — OpenCode still merges configuration deeply, so only
 // the canonical-owned keys are guaranteed to win.
 //
@@ -496,6 +498,13 @@ func BuildInlineConfig(existingContent, worktreeDir string) (string, error) {
 			worker[k] = v
 		}
 	}
+
+	// Model-directed termination: the primary worker must not run under a fixed
+	// model-steering step budget from any source (canonical or stale invocation
+	// config). A steps field would cap reasoning and force counter-based
+	// termination, which is exactly what this runner removes from the hot path.
+	// The worker terminates on its own when the prepared task is complete.
+	delete(worker, "steps")
 
 	// The canonical worker OWNS its instruction body. Inject it as the runtime
 	// `prompt` so the spawned worker uses the repo-owned prose and NEVER falls

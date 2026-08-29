@@ -297,7 +297,7 @@ func TestCanonicalWorkerOverridesStaleConfig(t *testing.T) {
 	// Simulate an invocation that carries stale worker fields from a prior
 	// run or from the installed home-directory agent file: steps still at 35,
 	// websearch weakened to allow, and an invocation-specific model value in
-	// the valid OpenCode 1.18.23 legacy worker-agent form (model as a string,
+	// the valid OpenCode 1.18.25 legacy worker-agent form (model as a string,
 	// variant as a string).
 	stale := `{
   "model": "openai/gpt-5",
@@ -363,7 +363,6 @@ func TestCanonicalWorkerOverridesStaleConfig(t *testing.T) {
 	var worker struct {
 		Description string                     `json:"description"`
 		Mode        string                     `json:"mode"`
-		Steps       int                        `json:"steps"`
 		Prompt      string                     `json:"prompt"`
 		Model       string                     `json:"model"`
 		Variant     string                     `json:"variant"`
@@ -376,8 +375,16 @@ func TestCanonicalWorkerOverridesStaleConfig(t *testing.T) {
 	if worker.Mode != "primary" {
 		t.Errorf("mode = %q, want primary (canonical override)", worker.Mode)
 	}
-	if worker.Steps != 50 {
-		t.Errorf("steps = %d, want 50 (canonical override of stale 35)", worker.Steps)
+
+	// Canonical worker must not impose any steps budget, even when stale invocation
+	// config supplied one. The worker terminates on its own (model-directed), not
+	// on a fixed step counter.
+	var workerMap map[string]json.RawMessage
+	if err := json.Unmarshal(agents[AgentName], &workerMap); err != nil {
+		t.Fatalf("worker block invalid: %v", err)
+	}
+	if _, ok := workerMap["steps"]; ok {
+		t.Errorf("merged worker still carries a steps budget; model-directed termination requires none")
 	}
 
 	// The stale prompt MUST be replaced by the exact repo-owned canonical body.
@@ -477,7 +484,6 @@ func TestEmptyIncomingConfigProducesFullCanonicalWorker(t *testing.T) {
 	var worker struct {
 		Description string                     `json:"description"`
 		Mode        string                     `json:"mode"`
-		Steps       int                        `json:"steps"`
 		Prompt      string                     `json:"prompt"`
 		Permission  map[string]json.RawMessage `json:"permission"`
 	}
@@ -488,8 +494,15 @@ func TestEmptyIncomingConfigProducesFullCanonicalWorker(t *testing.T) {
 	if worker.Mode != "primary" {
 		t.Errorf("mode = %q, want primary", worker.Mode)
 	}
-	if worker.Steps != 50 {
-		t.Errorf("steps = %d, want 50", worker.Steps)
+
+	// The canonical-only (empty-input) runtime config must not inject a primary
+	// steps limit. Model-directed termination means the worker has no step budget.
+	var workerMap map[string]json.RawMessage
+	if err := json.Unmarshal(agents[AgentName], &workerMap); err != nil {
+		t.Fatalf("worker block invalid: %v", err)
+	}
+	if _, ok := workerMap["steps"]; ok {
+		t.Errorf("canonical runtime config still injects a primary steps limit")
 	}
 	if worker.Description == "" {
 		t.Errorf("canonical description missing from empty-input config")

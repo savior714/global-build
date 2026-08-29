@@ -99,9 +99,10 @@ func TestEnvelopeBodySectionValidation(t *testing.T) {
 }
 
 // TestAgentContractSmoke guards the repo-owned canonical worker agent against
-// accidental drift: wrong mode, wrong steps value, weakened permissions, or a
-// missing publication prohibition. The source of truth is the embedded file at
-// internal/opencode/global-build-worker.md, not the installed home-directory copy.
+// accidental drift: wrong mode, reintroduction of a fixed steps budget,
+// weakened permissions, or a missing publication prohibition. The source of
+// truth is the embedded file at internal/opencode/global-build-worker.md, not
+// the installed home-directory copy.
 func TestAgentContractSmoke(t *testing.T) {
 	raw, err := opencode.EmbeddedWorkerSource()
 	if err != nil {
@@ -136,8 +137,14 @@ func TestAgentContractSmoke(t *testing.T) {
 	if fm.Mode != "primary" {
 		t.Errorf("mode = %q, want primary", fm.Mode)
 	}
-	if fm.Steps != 50 {
-		t.Errorf("steps = %d, want exactly 50", fm.Steps)
+	// The canonical worker must NOT declare a fixed model-steering step budget.
+	// Removing it is the root-cause change that lets the worker terminate on its
+	// own (model-directed) instead of on a fixed step counter.
+	if strings.Contains(frontmatterText, "steps:") {
+		t.Errorf("canonical worker frontmatter must not declare a steps budget:\n%s", frontmatterText)
+	}
+	if fm.Steps != 0 {
+		t.Errorf("canonical worker steps = %d, want 0 (no step budget)", fm.Steps)
 	}
 	if fm.Permission.Edit != "allow" {
 		t.Errorf("edit permission = %q, want allow", fm.Permission.Edit)
@@ -214,6 +221,25 @@ func TestAgentContractSmoke(t *testing.T) {
 	for _, s := range mustContain {
 		if !strings.Contains(body, s) {
 			t.Errorf("agent body missing required contract text %q", s)
+		}
+	}
+
+	// The worker must not carry step-budget or fixed-investigator-budget language.
+	// Delegation is optional and model-directed, not capped by a fixed count, and
+	// the worker terminates on its own rather than on a step counter.
+	mustNotContain := []string{
+		"step exhaustion",
+		"hard maximum of three",
+		"maximum of three Explore",
+		"steps:",
+		"Bounded",
+	}
+	for _, s := range mustNotContain {
+		if strings.Contains(frontmatterText, s) {
+			t.Errorf("agent frontmatter must not contain step/investigator budget language %q", s)
+		}
+		if strings.Contains(body, s) {
+			t.Errorf("agent body must not contain step/investigator budget language %q", s)
 		}
 	}
 }

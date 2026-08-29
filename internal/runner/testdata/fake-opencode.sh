@@ -16,7 +16,7 @@ set -u
 # Version probes are not worker attempts and therefore must not touch the
 # attempt-count/stdin fixtures.
 if [ "${1:-}" = '--version' ]; then
-  printf '%s\n' "${GB_FAKE_VERSION:-1.18.23}"
+  printf '%s\n' "${GB_FAKE_VERSION:-1.18.25}"
   exit 0
 fi
 
