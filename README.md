@@ -1,6 +1,11 @@
 # global-build
 
-`global-build` is a thin, stateless cross-repository BUILD runner. It executes one prepared mutation task inside an isolated detached Git worktree, validates the worker result mechanically, and produces a candidate commit without giving the worker publication authority.
+`global-build` has two deliberately separate layers. The BUILD runner remains
+one-shot and stateless: it executes one prepared mutation task inside an
+isolated detached Git worktree, validates the worker result mechanically, and
+produces a candidate commit without giving the worker publication authority.
+The Runtime layer durably schedules bounded tasks, preserves candidate/resume
+state, keeps approval scope-local, and reconstructs the next live frontier.
 
 ## Canonical operating contract
 
@@ -144,6 +149,32 @@ BUILD and publication are separate authorities.
 - `global-build cleanup --repo <path>` is inspect-only by default. Add `--apply` only to remove worktrees whose ownership and liveness are directly proven.
 
 Do not use merge/rebase/cherry-pick/force as normal publication recovery for a BUILD candidate.
+
+## Problem Framer Runtime v0.2.3
+
+The canonical Runtime policy is [Problem Framer Runtime v0.2.3](docs/PROBLEM_FRAMER_RUNTIME_v0.2.3.md).
+It is executable in `internal/runtime` and through the `runtime` subcommand:
+
+```sh
+# Apply one JSON runtime event and atomically save the resulting state.
+global-build runtime --state /absolute/path/runtime.json apply < event.json
+
+# Inspect state or test the whole-project stop condition without mutation.
+global-build runtime --state /absolute/path/runtime.json snapshot
+global-build runtime --state /absolute/path/runtime.json stop-check
+```
+
+`BRIEF_PUBLICATION_GATE` and `CHANGE_APPROVAL_GATE` are distinct. Once the
+Problem Brief is published, normal repository investigation, implementation,
+testing, repair, candidate preparation and proof continue autonomously.
+`APPROVAL_QUEUE` blocks only its candidate: an independent task can be
+`ACTIVE`, with at most one genuinely positive-value bounded task additionally
+`READY`. `APPROVE` resumes from the stored candidate/resume point after only
+causally relevant invalidation checks; unrelated `main` SHA movement does not
+restart discovery. The Runtime layer records publication outcomes from the
+existing separate `publish` authority and never pushes to a remote itself.
+Runtime state is atomically replaced under a nonblocking sidecar lock;
+concurrent state writers fail closed instead of losing a transition.
 
 ## Development and verification
 

@@ -1,5 +1,5 @@
-// Command global-build is a thin, stateless, deterministic runner that performs
-// exactly one BUILD attempt per invocation.
+// Command global-build exposes the deterministic one-shot BUILD executor and
+// the durable Runtime v0.2.3 state-transition adapter.
 //
 // Input is stdin-only and ephemeral (frontmatter envelope + five task body
 // sections). Diagnostics go to stderr; stable result keys go to stdout.
@@ -46,11 +46,13 @@ func run() int {
 			return runPublish(args[1:])
 		case "continuation-check":
 			return runContinuationCheck(args[1:])
+		case "runtime":
+			return runRuntime(args[1:])
 		default:
 			if !strings.HasPrefix(args[0], "-") {
 				// No-subcommand stdin BUILD mode is the only other mode.
 				// Positional words are never valid there.
-				fmt.Fprintf(os.Stderr, "global-build: unknown subcommand %q (use 'cleanup', 'publish', 'continuation-check', or stdin BUILD mode)\n", args[0])
+				fmt.Fprintf(os.Stderr, "global-build: unknown subcommand %q (use 'cleanup', 'publish', 'continuation-check', 'runtime', or stdin BUILD mode)\n", args[0])
 				return runner.ExitRunnerError
 			}
 			// Flag-led stdin BUILD mode (e.g. `--repo <path>`): parsed below,
